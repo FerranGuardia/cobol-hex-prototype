@@ -1,0 +1,72 @@
+{
+  "contract": "iria.cobol.environment/v1",
+  "description": "Physical dataset bindings for AWS CardDemo CBACT02C. Derived from iria-carddemo-lab: docs/carddemo-execution-coverage.json + app/jcl/READCARD.jcl + app/cpy/CVACT02Y.cpy. Paths are relative to this file.",
+  "slice": "CBACT02C",
+  "source_anchor": {
+    "cobol": "../../../CardDemo/app/cbl/CBACT02C.cbl",
+    "jcl": "../../../iria-carddemo-lab/vendor/aws-carddemo/app/jcl/READCARD.jcl",
+    "copybooks": ["../../../CardDemo/app/cpy/CVACT02Y.cpy"]
+  },
+  "datasets": {
+    "CARDFILE-FILE": {
+      "physicalPath": "../../../iria-carddemo-lab/vendor/aws-carddemo/app/data/EBCDIC/AWS.M2.CARDDEMO.CARDDATA.PS",
+      "asciiPath": "../../../CardDemo/app/data/ASCII/carddata.txt",
+      "dsn": "AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS",
+      "ddName": "CARDFILE",
+      "direction": "input",
+      "encoding": "ebcdic",
+      "ccsid": "cp037",
+      "recordFormat": "fixed",
+      "recordLength": 150,
+      "organization": "indexed",
+      "accessMode": "sequential",
+      "recordKey": "FD-CARD-NUM",
+      "layout": "CARD-RECORD",
+      "expectedRecords": 50,
+      "fields": [
+        {"name": "CARD-NUM",            "offset":   0, "length": 16, "type": "X"},
+        {"name": "CARD-ACCT-ID",        "offset":  16, "length": 11, "type": "9"},
+        {"name": "CARD-CVV-CD",         "offset":  27, "length":  3, "type": "9"},
+        {"name": "CARD-EMBOSSED-NAME",  "offset":  30, "length": 50, "type": "X"},
+        {"name": "CARD-EXPIRAION-DATE", "offset":  80, "length": 10, "type": "X"},
+        {"name": "CARD-ACTIVE-STATUS",  "offset":  90, "length":  1, "type": "X"},
+        {"name": "FILLER",              "offset":  91, "length": 59, "type": "X"}
+      ]
+    }
+  },
+  "execution": {
+    "iriaRuntime": {
+      "status": "real",
+      "reason": "Executed by the Iria COBOL runtime through JCL DD/fileMap wiring.",
+      "expectedRc": 0,
+      "parseOk": true,
+      "runOk": true,
+      "rcOk": true,
+      "steps": 1,
+      "unsupportedControls": 0
+    },
+    "abend": {
+      "callee": "CEE3ABD",
+      "abendCode": 999,
+      "semantics": "terminal — process exits, never returns",
+      "cobolLine": 158
+    }
+  },
+  "displayContract": {
+    "startLine": "START OF EXECUTION OF PROGRAM CBACT02C",
+    "endLine": "END OF EXECUTION OF PROGRAM CBACT02C",
+    "perRecord": "150-byte fixed-width CARD-RECORD verbatim",
+    "ioErrorLines": [
+      "ERROR OPENING CARDFILE",
+      "ERROR READING CARDFILE",
+      "ERROR CLOSING CARDFILE",
+      "ABENDING PROGRAM"
+    ],
+    "fileStatusFormat": "FILE STATUS IS: NNNN<4-char-code>"
+  },
+  "expectedOutput": {
+    "asciiOraclePath": "../../golden-outputs/CBACT02C.expected-output.txt",
+    "ebcdicNote": "On a real mainframe, DISPLAY emits EBCDIC bytes. The ASCII oracle reflects what a JVM executing on ASCII corpus would emit; for true z/OS parity, run through cics-tcp-gateway (Hercules/MVS)."
+  },
+  "fileStatusCodesBranched": ["00", "10"]
+}

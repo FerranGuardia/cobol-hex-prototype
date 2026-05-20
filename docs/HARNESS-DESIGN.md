@@ -1,8 +1,39 @@
 # HARNESS-DESIGN — what we'll build, in what order
 
-> Proposed design grounded in [HARNESS-RESEARCH.md](HARNESS-RESEARCH.md). Not yet built. Open for revision before any code lands.
+> Proposed design grounded in [HARNESS-RESEARCH.md](HARNESS-RESEARCH.md). Phase A (contract validation + K-vote + mechanical extraction + drift checks + idempotence + reverse-translate) **landed 2026-05-20 session-2** under `src/harness/`. Lower sections of this doc reflect the original increment plan and are partially superseded by what shipped.
 
-The research said the harness is a culture, not a one-shot artifact (research §6). So this design ships in five increments, each independently usable. Earlier increments unblock later ones; nothing depends on a future increment.
+The research said the harness is a culture, not a one-shot artifact (research §6). The original plan had five increments. Phase A in session-2 collapsed increments 1, 3, 4, and 5 into a single landing focused on the wave-2 drift catches.
+
+## Current shape (session-2, Phase A landed)
+
+`harness/` was moved from the repo root to `src/harness/` so setuptools' `find` (under `src/`) discovers it. The package is imported as `harness` directly (no `src.` prefix).
+
+```
+src/harness/
+├── __init__.py
+├── contract/
+│   ├── validate.py    # JSON Schema + canonical-form check + retry-prompt builder
+│   ├── diff.py        # semantic diff between code-author and test-author contracts
+│   └── kvote.py       # K-vote field-by-field majority across N contracts
+├── extract/
+│   └── cobol_facts.py # mechanical extractor: EXEC SQL, FILE STATUS, paragraphs, COPY, SELECT, CEE3xxx, DISPLAY
+├── checks/
+│   ├── drift_checks.py     # the 5 wave-2 drift catches (file-org, abend-catchable, path-leak, charset, duplicated-output)
+│   ├── idempotence.py      # second-pass diff: code-author on own output should be no-op
+│   └── reverse_translate.py # structural diff between original COBOL and reverse-translated COBOL
+└── rules/               # placeholder for semgrep rules (Phase D, deferred)
+```
+
+### Still to land (Phase B/C/D)
+- ProLeap COBOL AST integration (Phase C)
+- Hermetic JDK/Maven/ProLeap container (Phase B)
+- Semgrep rules + compile gate (Phase D — superseded by Maven test-author output)
+- Two-pass F5 orchestrator wiring (replaces the current single-pass `convert.py`)
+- Curated `corpus/golden-outputs/CBACT02C.expected-output.txt`
+
+---
+
+## Original 5-increment plan (kept for reference)
 
 ---
 

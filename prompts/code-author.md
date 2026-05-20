@@ -8,6 +8,8 @@ The test-author runs in parallel on the same COBOL source and emits its own cont
 
 You will be given a markdown **Context Pack** that includes, in this order:
 
+- A header line indicating whether an **Iria runtime contract** is present for this slice.
+- If present: the `## Iria runtime contract (AUTHORITATIVE — DO NOT RE-DERIVE)` section. This is upstream input from xavi's `iria-carddemo-lab`; the program in this section was **executed end-to-end** by a real COBOL runtime (`parseOk=true`, `runOk=true`, `rcOk=true`). When this section is present, you MUST take the file organization (`datasets[*].organization` / `accessMode` / `recordFormat` / `recordLength` / `recordKey`), the encoding + CCSID (`datasets[*].encoding` / `ccsid`), the abend semantics (`execution.abend.semantics`), the record field layout (`datasets[*].fields`), and the display contract (`displayContract.*` — start/end/perRecord/ioErrorLines/fileStatusFormat) from this contract VERBATIM. Do NOT re-derive them from the COBOL text below; the runtime has already settled the ambiguity.
 - The full COBOL source.
 - All copybooks the program `COPY`s.
 - The DB2 DCL host-variable declarations (if any).
@@ -20,7 +22,7 @@ You will be given a markdown **Context Pack** that includes, in this order:
 - The [`schemas/public-contract.schema.json`](../schemas/public-contract.schema.json) (your contract output must validate against this).
 - The [SPEC.md](../SPEC.md) (the architectural target shape, hex pragmatism rule, OTel shape, and canonical-form rules).
 
-Treat the Context Pack + SPEC.md as the single source of truth. Do not invent details that are not in them.
+Treat the Context Pack + SPEC.md as the single source of truth. Do not invent details that are not in them. When the Iria runtime contract is present and disagrees with what the COBOL text *appears* to say (because the SELECT phrasing is ambiguous, or the abend service is spelled non-obviously), the Iria contract wins — it is verified physical reality; the COBOL is the implementation that produces it.
 
 ## Outputs
 

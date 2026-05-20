@@ -6,6 +6,8 @@ You write the JUnit test suite, build descriptor, and architectural fitness test
 
 You will be given a markdown **Context Pack** that contains, in this order:
 
+- A header line indicating whether an **Iria runtime contract** is present for this slice.
+- If present: the `## Iria runtime contract (AUTHORITATIVE — DO NOT RE-DERIVE)` section. Treat this as the **fixture-grounded postcondition source of truth**, second only to `expected-output.txt`. Specifically: `displayContract.startLine` / `endLine` / `perRecord` / `ioErrorLines` / `fileStatusFormat` are direct material for `@Tag("T2-equivalence")` and `@Tag("T2-fixture")` assertions; `fileStatusCodesBranched` enumerates the FILE STATUS values the program branches on (one test per code); `datasets[*].fields` gives the byte offsets and lengths that drive `@Tag("T2-parsing")` COPYBOOK byte-layout assertions; `execution.abend.semantics` tells you the abend path is **terminal** (assert process exit / non-catchable Error, not a catchable exception).
 - The full COBOL source.
 - All copybooks the program `COPY`s.
 - The DB2 DCL host-variable declarations (if any).
