@@ -77,11 +77,12 @@ def cmd_convert(
 @app.command("validate")
 def cmd_validate(
     run_id: str = typer.Option(..., "--run-id"),
+    source_file: Path | None = typer.Option(None, "--file", help="Source file for the report (optional)"),
 ) -> None:
     """F6 — validate a run against the four acceptance tiers."""
     cfg = _config_from_env()
-    report = validate.run(cfg, run_id)
-    console.print_json(json.dumps(report.model_dump()))
+    report = validate.run(cfg, run_id, source_file=source_file)
+    console.print_json(json.dumps(report.model_dump(mode="json")))
     if report.t1.status != "pass":
         raise typer.Exit(1)
 
@@ -99,8 +100,8 @@ def cmd_run(
     context_pack.build(cfg, run_id, file)
     golden_master.build(cfg, run_id, file)
     convert.run(cfg, run_id, file, force=force)
-    report = validate.run(cfg, run_id)
-    console.print_json(json.dumps(report.model_dump()))
+    report = validate.run(cfg, run_id, source_file=file)
+    console.print_json(json.dumps(report.model_dump(mode="json")))
 
 
 @app.command("drift")

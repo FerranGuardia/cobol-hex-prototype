@@ -109,11 +109,21 @@ def _t4_check(run_dir: Path) -> TierResult:
     return TierResult(status="pass", details={"note": "real metrics added once codex CLI provides them"})
 
 
-def run(cfg: RunConfig, run_id: str) -> ValidationReport:
+def run(cfg: RunConfig, run_id: str, source_file: Path | None = None) -> ValidationReport:
     run_dir = cfg.artifacts_dir / run_id
     out_dir = run_dir / "output"
     gm_path = run_dir / "golden_master.json"
-    source_file = Path(run_dir.name)  # placeholder; actual source path stored in manifest
+
+    # If caller didn't provide source_file, try to recover it from the golden master.
+    if source_file is None and gm_path.exists():
+        try:
+            gm = json.loads(gm_path.read_text())
+            sf = gm.get("source_file")
+            source_file = Path(sf) if sf else Path("(unknown)")
+        except (json.JSONDecodeError, OSError):
+            source_file = Path("(unknown)")
+    elif source_file is None:
+        source_file = Path("(unknown)")
 
     t1 = _t1_check(out_dir)
     t2 = _t2_check(gm_path, out_dir)
