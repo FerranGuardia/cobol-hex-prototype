@@ -207,15 +207,28 @@ def _scan_run(run_dir: Path) -> Run | None:
                 ))
 
     # Compute run-level mtime + start.
+    # Prefer the directory's own ctime as the run "started_at" — captures the
+    # moment the run kicked off even if the first artifact lands seconds later.
     mtimes = [ph.mtime for ph in phases if ph.mtime is not None]
-    last_mtime = max(mtimes) if mtimes else run_dir.stat().st_mtime
-    started_at = min(mtimes) if mtimes else None
-    elapsed = (last_mtime - started_at) if started_at else 0.0
+    dir_stat = run_dir.stat()
+    last_mtime = max(mtimes) if mtimes else dir_stat.st_mtime
+    if mtimes:
+        started_at = min(min(mtimes), dir_stat.st_mtime)
+    else:
+        started_at = dir_stat.st_mtime
 
     # In-flight detection: at least one phase pending, last_mtime recent.
     now = time.time()
     pending = [ph for ph in phases if ph.status == "pending"]
     is_live = bool(pending) and (now - last_mtime) < LIVE_WINDOW_SECONDS and not is_smoke
+
+    # Elapsed: for a LIVE run, "elapsed" means wall-clock since start (the Codex
+    # call can run for minutes with no artifact write). For a finished run, it
+    # means wall-clock from first artifact to last.
+    if is_live:
+        elapsed = max(0.0, now - started_at) if started_at else 0.0
+    else:
+        elapsed = (last_mtime - started_at) if started_at else 0.0
 
     # Mark the first pending phase as "running" if live.
     if is_live and pending:
