@@ -96,59 +96,33 @@ def cmd_validate(
 def cmd_run(
     file: Path = typer.Option(..., "--file", exists=True, help="COBOL .cbl to convert"),
     force: bool = typer.Option(False, "--force", help="Bypass cache for every phase"),
-    k: int = typer.Option(1, "--k", min=1, max=11, help="K-vote runs per persona"),
+    k: int = typer.Option(1, "--k", min=1, max=11, help="K-vote runs per persona (ignored in conveyor mode)"),
     mode: str = typer.Option(
-        "two-pass-blind", "--mode",
-        help="two-pass-blind | single-pass",
+        "conveyor-belt", "--mode",
+        help="conveyor-belt (default — five deterministic gates, retry with feedback)",
     ),
 ) -> None:
-    """End-to-end: F3 -> F4 -> F5 (two-pass) -> F6 (validate + drift-check) on one file."""
+    """End-to-end conveyor belt: F3 (context pack) → F4 (golden master) → F5 (conveyor)."""
     cfg = _config_from_env()
     coord = Coordinator(cfg)
     run_id = coord.new_run_id(file)
-    console.rule(f"[bold]run {run_id}  mode={mode}  k={k}[/bold]")
+    console.rule(f"[bold]run {run_id}[/bold]")
     context_pack.build(cfg, run_id, file)
     golden_master.build(cfg, run_id, file)
     convert.run(cfg, run_id, file, force=force, k=k, mode=mode)  # type: ignore[arg-type]
-    report = validate.run(cfg, run_id, source_file=file)
-    console.print_json(json.dumps(report.model_dump(mode="json")))
 
-    # Drift checks (deterministic, no extra Codex) — run automatically after validate.
-    try:
-        from harness.checks.drift_checks import run_all as drift_run_all
-        from harness.extract.cobol_facts import extract as extract_cobol_facts
-
-        output_root = cfg.artifacts_dir / run_id / "output"
-        candidates = list(output_root.rglob("domain"))
-        java_root = candidates[0].parent if candidates else output_root
-        facts = extract_cobol_facts(file)
-        drift = drift_run_all(facts, java_root)
-        (cfg.artifacts_dir / run_id / "drift.json").write_text(
-            json.dumps(drift.to_dict(), indent=2)
-        )
-        console.rule("[bold]drift-check[/bold]")
-        console.print_json(json.dumps(drift.to_dict(), indent=2))
-    except Exception as exc:  # pragma: no cover — best-effort post-step
-        console.print(f"[yellow]drift-check skipped:[/yellow] {exc}")
-
-    # Contract diff (if both personas produced contracts) — also automatic.
-    if mode == "two-pass-blind":
-        try:
-            from harness.contract.diff import diff_contracts
-
-            code_path = cfg.artifacts_dir / run_id / "contracts" / "public-contract.code-author.json"
-            test_path = cfg.artifacts_dir / run_id / "contracts" / "public-contract.test-author.json"
-            if code_path.exists() and test_path.exists():
-                code_contract = json.loads(code_path.read_text())
-                test_contract = json.loads(test_path.read_text())
-                diff_result = diff_contracts(code_contract, test_contract)
-                (cfg.artifacts_dir / run_id / "contracts" / "diff.json").write_text(
-                    json.dumps(diff_result.to_dict(), indent=2)
-                )
-                console.rule("[bold]contract-diff[/bold]")
-                console.print_json(json.dumps(diff_result.to_dict(), indent=2))
-        except Exception as exc:  # pragma: no cover
-            console.print(f"[yellow]contract-diff skipped:[/yellow] {exc}")
+    # The conveyor IS the validation. Read its result and surface to console.
+    conveyor_path = cfg.artifacts_dir / run_id / "conveyor.json"
+    if conveyor_path.exists():
+        result = json.loads(conveyor_path.read_text())
+        if result.get("shipped"):
+            console.rule(f"[bold green]SHIPPED in {result.get('attempts', 1)} attempt(s)[/bold green]")
+        else:
+            blocked = result.get("final_gate", "?")
+            console.rule(f"[bold red]BLOCKED at gate `{blocked}`[/bold red]")
+            console.print(f"[yellow]see artifacts/{run_id}/gate_failure.json[/yellow]")
+        console.print(f"output: {cfg.artifacts_dir / run_id / 'output'}")
+        console.print(f"conveyor log: {conveyor_path}")
 
 
 @app.command("drift")

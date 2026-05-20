@@ -1,8 +1,11 @@
-"""HTML/CSS/JS for the observatory dashboard. One page, no build step.
+"""HTML/CSS/JS for the observatory dashboard.
 
-Editorial layout — single column, Claude warm palette, serif headlines,
-sans body, lots of whitespace. The page polls /api/state every 2.5s and
-re-renders.
+Editorial layout — single column, Claude warm palette. Latest run is the
+front page; older runs collapse to a compact one-line list; issues only
+appear when the conveyor actually blocked. No T1/T2/F-codes / run-id
+hashes in headline language.
+
+Polls /api/state every 2.5s and re-renders.
 """
 from __future__ import annotations
 
@@ -11,16 +14,16 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Pipeline Observatory · COBOL hex prototype</title>
+<title>Pipeline Observatory · COBOL → Hex Java</title>
 <style>
   :root {
     --bg:        #FAFAF7;
-    --bg-sub:   #F2EFE6;
+    --bg-sub:    #F2EFE6;
     --rule:      #D6D2C5;
     --text:      #1B1B1A;
     --text-soft: #6B6862;
     --text-faint:#9B968A;
-    --accent:    #C15F3C;   /* warm coral — Claude print, not startup neon */
+    --accent:    #C15F3C;
     --ok:        #5B7553;
     --warn:      #B07A3E;
     --error:     #A04A3E;
@@ -38,10 +41,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
     -webkit-font-smoothing: antialiased;
   }
   .page {
-    max-width: 960px;
+    max-width: 880px;
     margin: 0 auto;
     padding: 56px 40px 96px;
   }
+
   /* Masthead */
   header.masthead {
     border-bottom: 1px solid var(--rule);
@@ -57,7 +61,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
     font-size: 28px;
     font-weight: 600;
     letter-spacing: -0.01em;
-    color: var(--text);
   }
   .masthead .subtitle {
     font-family: var(--sans);
@@ -71,7 +74,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     font-size: 13px;
     color: var(--text-soft);
   }
-  /* Section headers — small caps above a rule */
+
   section { margin-bottom: 48px; }
   section h2 {
     font-family: var(--sans);
@@ -84,141 +87,138 @@ INDEX_HTML = r"""<!DOCTYPE html>
     padding-bottom: 8px;
     border-bottom: 1px solid var(--rule);
   }
-  /* Run entry */
-  .run {
-    padding: 18px 0;
-    border-bottom: 1px solid var(--rule);
+
+  /* Featured (latest or in-flight) — the front page */
+  .feature {
+    padding: 8px 0 24px;
   }
-  .run:last-child { border-bottom: none; }
-  .run-head {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    gap: 24px;
-    margin-bottom: 4px;
-  }
-  .run-title {
-    font-family: var(--serif);
-    font-size: 19px;
-    font-weight: 600;
-    color: var(--text);
-  }
-  .run-title .slice {
-    font-weight: 700;
-  }
-  .run-title .label {
-    font-weight: 400;
-    color: var(--text-soft);
-    margin-left: 8px;
-  }
-  .run-meta {
+  .feature .when {
     font-family: var(--mono);
     font-size: 12px;
     color: var(--text-soft);
-    white-space: nowrap;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-bottom: 8px;
   }
-  .status-dot {
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    margin-right: 6px;
-    vertical-align: middle;
+  .feature .lede {
+    font-family: var(--serif);
+    font-size: 26px;
+    line-height: 1.25;
+    font-weight: 600;
+    color: var(--text);
+    margin: 0 0 6px;
   }
-  .status-running { background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
-  .status-ok      { background: var(--ok); }
-  .status-issues  { background: var(--warn); }
-  .status-blocked { background: var(--error); }
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50%      { opacity: 0.35; }
-  }
-  .run-summary {
+  .feature .lede .slice { font-weight: 700; }
+  .feature .lede.shipped  .verdict { color: var(--ok); }
+  .feature .lede.blocked  .verdict { color: var(--error); }
+  .feature .lede.running  .verdict { color: var(--accent); }
+  .feature .lede.legacy   .verdict { color: var(--text-faint); font-style: italic; }
+  .feature .subhead {
     font-family: var(--serif);
     font-style: italic;
-    font-size: 14px;
+    font-size: 16px;
     color: var(--text-soft);
-    margin-bottom: 14px;
+    margin-bottom: 18px;
   }
-  /* Phase grid */
-  .phases {
+
+  /* Gate trail */
+  .gates {
     list-style: none;
-    margin: 10px 0 4px;
     padding: 0;
+    margin: 0;
     font-family: var(--mono);
     font-size: 13px;
   }
-  .phases li {
+  .gates li {
     display: grid;
-    grid-template-columns: 28px 140px 1fr 100px;
+    grid-template-columns: 28px 1fr auto;
     gap: 12px;
-    padding: 3px 0;
-    color: var(--text);
-  }
-  .phases li.pending  { color: var(--text-faint); }
-  .phases li.running  { color: var(--text); }
-  .phases li.done     { color: var(--text); }
-  .ph-mark { text-align: center; }
-  .ph-mark.done    { color: var(--ok); }
-  .ph-mark.running { color: var(--accent); font-weight: bold; }
-  .ph-mark.pending { color: var(--text-faint); }
-  .ph-mark.fail    { color: var(--error); font-weight: bold; }
-  .phases li.fail  { color: var(--error); }
-  .ph-label  { color: inherit; }
-  .ph-detail { color: var(--text-soft); }
-  .ph-time   { color: var(--text-soft); text-align: right; }
-  .pending .ph-detail, .pending .ph-time { color: var(--text-faint); }
-
-  /* Issues block */
-  .issues {
-    list-style: none;
-    margin: 8px 0 0;
-    padding: 0;
-  }
-  .issues li {
-    padding: 10px 0;
-    border-bottom: 1px dashed var(--rule);
-    font-size: 14px;
-  }
-  .issues li:last-child { border-bottom: none; }
-  .issue-head {
-    display: flex;
-    gap: 12px;
+    padding: 4px 0;
     align-items: baseline;
   }
-  .issue-tag {
+  .gates .mark { text-align: center; }
+  .gates .mark.done    { color: var(--ok); }
+  .gates .mark.running { color: var(--accent); font-weight: bold; }
+  .gates .mark.pending { color: var(--text-faint); }
+  .gates .mark.fail    { color: var(--error); font-weight: bold; }
+  .gates .label { color: var(--text); }
+  .gates .detail { color: var(--text-soft); }
+  .gates li.pending { color: var(--text-faint); }
+  .gates li.pending .label { color: var(--text-faint); }
+  .gates li.fail .label { color: var(--error); }
+
+  /* Compact history list */
+  .history {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    font-size: 14px;
+  }
+  .history li {
+    display: grid;
+    grid-template-columns: 72px 110px 1fr auto;
+    gap: 18px;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--rule);
+    align-items: baseline;
+  }
+  .history li:last-child { border-bottom: none; }
+  .history .time {
     font-family: var(--mono);
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    padding: 2px 6px;
-    border-radius: 2px;
-    background: var(--bg-sub);
+    font-size: 12px;
+    color: var(--text-soft);
+  }
+  .history .slice {
+    font-family: var(--serif);
+    font-weight: 700;
     color: var(--text);
   }
-  .issue-tag.error  { background: #F1DBD3; color: var(--error); }
-  .issue-tag.warn   { background: #EFE2C7; color: var(--warn); }
-  .issue-tag.info   { background: #DDE5DA; color: var(--ok); }
-  .issue-meta {
+  .history .verdict {
+    font-family: var(--serif);
+    color: var(--text-soft);
+    font-style: italic;
+  }
+  .history .verdict.shipped { color: var(--ok); font-style: normal; }
+  .history .verdict.blocked { color: var(--error); font-style: normal; }
+  .history .verdict.running { color: var(--accent); font-style: normal; }
+  .history .verdict.legacy  { color: var(--text-faint); font-style: italic; }
+  .history .runid {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-faint);
+    text-align: right;
+  }
+
+  /* Issues — only shown when real */
+  .issues { list-style: none; padding: 0; margin: 8px 0 0; }
+  .issues li {
+    padding: 12px 0;
+    border-bottom: 1px dashed var(--rule);
+  }
+  .issues li:last-child { border-bottom: none; }
+  .issues .where {
     font-family: var(--mono);
     font-size: 11px;
     color: var(--text-soft);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 4px;
   }
-  .issue-msg {
+  .issues .msg {
     font-family: var(--serif);
-    margin-top: 2px;
+    font-size: 15px;
     color: var(--text);
   }
 
-  /* Empty states */
+  /* Empty state */
   .empty {
     font-family: var(--serif);
     font-style: italic;
     color: var(--text-faint);
-    padding: 14px 0;
+    padding: 12px 0;
   }
 
-  /* History footer */
+  /* Footer */
   .footer {
     margin-top: 64px;
     padding-top: 14px;
@@ -229,18 +229,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
     display: flex;
     justify-content: space-between;
   }
-  .footer a { color: var(--text-soft); text-decoration: none; border-bottom: 1px dotted var(--rule); }
-  .footer a:hover { color: var(--accent); }
-
-  /* Drilldown link on each run */
-  .run-head a {
+  .footer a {
     color: var(--text-soft);
     text-decoration: none;
-    font-family: var(--mono);
-    font-size: 11px;
     border-bottom: 1px dotted var(--rule);
   }
-  .run-head a:hover { color: var(--accent); }
+  .footer a:hover { color: var(--accent); }
 </style>
 </head>
 <body>
@@ -248,24 +242,24 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <header class="masthead">
     <div>
       <div class="title">Pipeline Observatory</div>
-      <div class="subtitle">COBOL → Hexagonal Java · Iria-aware F3</div>
+      <div class="subtitle">COBOL → Hexagonal Java</div>
     </div>
     <div class="clock" id="clock">—</div>
   </header>
 
-  <section id="live-section">
-    <h2>In flight</h2>
-    <div id="live"></div>
+  <section id="feature-section">
+    <h2>Latest run</h2>
+    <div id="feature"></div>
   </section>
 
-  <section id="issues-section">
-    <h2>Issues surfaced</h2>
+  <section id="issues-section" hidden>
+    <h2>Open issues</h2>
     <ul class="issues" id="issues"></ul>
   </section>
 
-  <section id="recent-section">
+  <section id="history-section">
     <h2>Recent runs</h2>
-    <div id="recent"></div>
+    <ul class="history" id="history"></ul>
   </section>
 
   <div class="footer">
@@ -276,7 +270,38 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
 <script>
 const STATUS_GLYPH = { done: '✓', running: '◐', pending: '·', fail: '✗' };
-const STATUS_LABEL = { ok: 'all pass', running: 'running', issues: 'issues', blocked: 'blocked' };
+
+const GATE_LABEL_HUMAN = {
+  'code-arrived': 'Code arrived',
+  'compile':       'Compiled',
+  'drift':         'Followed the architecture',
+  'run':           'Ran against the fixture',
+  'oracle-diff':   'Matched the expected output',
+};
+
+const VERDICT_PHRASES = {
+  shipped: 'shipped',
+  blocked: 'blocked',
+  running: 'working…',
+  legacy:  'older — no record',
+  smoke:   'smoke build',
+};
+
+const VERDICT_LEDE = {
+  shipped: 'shipped',
+  blocked: 'blocked',
+  running: 'in flight',
+  legacy:  'an older run (no conveyor record)',
+  smoke:   'a smoke build',
+};
+
+const VERDICT_CLASS = {
+  shipped: 'shipped',
+  blocked: 'blocked',
+  running: 'running',
+  legacy:  'legacy',
+  smoke:   'legacy',
+};
 
 function fmtDuration(seconds) {
   if (seconds == null || isNaN(seconds)) return '—';
@@ -292,7 +317,16 @@ function fmtDuration(seconds) {
 function fmtTimeOfDay(epoch) {
   if (!epoch) return '—';
   const d = new Date(epoch * 1000);
-  return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+}
+
+function fmtWhen(epoch) {
+  if (!epoch) return '—';
+  const d = new Date(epoch * 1000);
+  return d.toLocaleString('en-GB', {
+    weekday: 'long', day: '2-digit', month: 'long',
+    hour: '2-digit', minute: '2-digit',
+  });
 }
 
 function fmtClock() {
@@ -303,7 +337,7 @@ function fmtClock() {
   });
 }
 
-function el(tag, attrs={}, ...children) {
+function el(tag, attrs = {}, ...children) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
     if (k === 'class') e.className = v;
@@ -317,64 +351,65 @@ function el(tag, attrs={}, ...children) {
   return e;
 }
 
-function renderPhase(p, runStartedAt) {
-  const mark = el('span', { class: 'ph-mark ' + p.status }, STATUS_GLYPH[p.status] || '·');
-  const label = el('span', { class: 'ph-label' }, p.label);
-  const detail = el('span', { class: 'ph-detail' }, p.detail || '');
-  let timeText = '';
-  if (p.mtime && runStartedAt) {
-    const dt = p.mtime - runStartedAt;
-    timeText = fmtDuration(dt);
-  }
-  const time = el('span', { class: 'ph-time' }, timeText);
-  return el('li', { class: p.status }, mark, label, detail, time);
+function verdictWord(run) {
+  if (run.is_live) return 'running';
+  return run.overall_status;
 }
 
-function renderRun(run) {
-  const dot = el('span', { class: 'status-dot status-' + run.overall_status });
-  const sliceSpan = el('span', { class: 'slice' }, run.slice || run.run_id);
-  const labelSpan = el('span', { class: 'label' },
-    run.kind === 'smoke' ? '· smoke' : `· ${run.run_id}`);
-  const titleDiv = el('div', { class: 'run-title' }, dot, sliceSpan, labelSpan);
+function renderFeature(run) {
+  const verdict = verdictWord(run);
+  const cls = VERDICT_CLASS[verdict] || 'legacy';
+  const ledeWord = VERDICT_LEDE[verdict] || verdict;
 
-  const metaParts = [];
-  if (run.is_live) {
-    metaParts.push(`${fmtDuration(run.elapsed_seconds)} elapsed`);
-    if (run.estimated_remaining_seconds != null) {
-      metaParts.push(`est. ${fmtDuration(run.estimated_remaining_seconds)} left`);
-    }
-  } else {
-    metaParts.push(fmtTimeOfDay(run.last_mtime));
-    metaParts.push(fmtDuration(run.elapsed_seconds));
-  }
-  const metaDiv = el('div', { class: 'run-meta' }, metaParts.join(' · '));
+  const lede = el('h1', { class: 'lede ' + cls });
+  lede.appendChild(el('span', { class: 'slice' }, run.slice || 'unknown'));
+  lede.appendChild(document.createTextNode(' is '));
+  lede.appendChild(el('span', { class: 'verdict' }, ledeWord));
+  lede.appendChild(document.createTextNode('.'));
 
-  const head = el('div', { class: 'run-head' }, titleDiv, metaDiv);
-  const summary = el('div', { class: 'run-summary' }, run.summary_line);
+  const when = el('div', { class: 'when' }, fmtWhen(run.last_mtime));
+  const subhead = el('div', { class: 'subhead' }, run.summary_line || '');
 
-  const phaseList = el('ul', { class: 'phases' });
-  for (const ph of run.phases) {
-    phaseList.appendChild(renderPhase(ph, run.started_at));
+  const gateList = el('ul', { class: 'gates' });
+  // Pull just the conveyor gates from the phases array (id starts with "G:").
+  const conveyorPhases = (run.phases || []).filter(p => p.id && p.id.startsWith('G:') && p.id !== 'G:attempts');
+  for (const p of conveyorPhases) {
+    const mark = el('span', { class: 'mark ' + p.status }, STATUS_GLYPH[p.status] || '·');
+    const humanLabel = GATE_LABEL_HUMAN[p.id.replace('G:', '')] || p.label;
+    const label = el('span', { class: 'label' }, humanLabel);
+    const detail = el('span', { class: 'detail' }, p.detail || '');
+    gateList.appendChild(el('li', { class: p.status }, mark, label, detail));
   }
 
-  const container = el('div', { class: 'run' }, head, summary, phaseList);
+  const container = el('div', { class: 'feature' }, when, lede, subhead, gateList);
   return container;
 }
 
+function renderHistoryRow(run) {
+  const time = el('span', { class: 'time' }, fmtTimeOfDay(run.last_mtime));
+  const slice = el('span', { class: 'slice' }, run.slice || '—');
+  const verdict = verdictWord(run);
+  const cls = VERDICT_CLASS[verdict] || 'legacy';
+  const phrase = VERDICT_PHRASES[verdict] || verdict;
+  const verdictEl = el('span', { class: 'verdict ' + cls }, phrase);
+  const runid = el('span', { class: 'runid' }, (run.run_id || '').slice(0, 17));
+  return el('li', {}, time, slice, verdictEl, runid);
+}
+
 function renderIssues(issues) {
+  const section = document.getElementById('issues-section');
   const list = document.getElementById('issues');
   list.innerHTML = '';
   if (!issues.length) {
-    list.appendChild(el('div', { class: 'empty' }, 'No open issues across recent runs.'));
+    section.hidden = true;
     return;
   }
+  section.hidden = false;
   for (const i of issues) {
-    const tag = el('span', { class: 'issue-tag ' + (i.severity || 'info') }, i.tag);
-    const meta = el('span', { class: 'issue-meta' },
-      `${i.slice || ''} · ${i.run_id}`);
-    const head = el('div', { class: 'issue-head' }, tag, meta);
-    const msg = el('div', { class: 'issue-msg' }, i.message);
-    list.appendChild(el('li', {}, head, msg));
+    const where = el('div', { class: 'where' },
+      `${i.slice || ''} · ${(i.run_id || '').slice(0, 17)}`);
+    const msg = el('div', { class: 'msg' }, i.message);
+    list.appendChild(el('li', {}, where, msg));
   }
 }
 
@@ -387,20 +422,26 @@ async function refresh() {
     document.getElementById('root-path').textContent = state.artifacts_root;
     document.getElementById('clock').textContent = fmtClock();
 
-    const liveEl = document.getElementById('live');
-    liveEl.innerHTML = '';
-    if (!state.live.length) {
-      liveEl.appendChild(el('div', { class: 'empty' }, 'No runs in flight.'));
+    // Featured: server picks priority (live > shipped/blocked > legacy > smoke).
+    const featured = state.featured;
+    const featureEl = document.getElementById('feature');
+    featureEl.innerHTML = '';
+    if (featured) {
+      featureEl.appendChild(renderFeature(featured));
     } else {
-      for (const run of state.live) liveEl.appendChild(renderRun(run));
+      featureEl.appendChild(el('div', { class: 'empty' }, 'No runs yet.'));
     }
 
-    const recentEl = document.getElementById('recent');
-    recentEl.innerHTML = '';
-    if (!state.recent.length) {
-      recentEl.appendChild(el('div', { class: 'empty' }, 'No recent runs yet.'));
+    // Recent: server already excluded the featured run.
+    const historyEl = document.getElementById('history');
+    historyEl.innerHTML = '';
+    const recent = state.recent || [];
+    if (recent.length === 0) {
+      historyEl.appendChild(el('div', { class: 'empty' }, 'No older runs.'));
     } else {
-      for (const run of state.recent) recentEl.appendChild(renderRun(run));
+      for (const run of recent.slice(0, 12)) {
+        historyEl.appendChild(renderHistoryRow(run));
+      }
     }
 
     renderIssues(state.open_issues);

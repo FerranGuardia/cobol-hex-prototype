@@ -130,7 +130,22 @@ def collect(artifacts_root: Path) -> dict[str, Any]:
             run.estimated_remaining_seconds = _estimate_remaining(run, history_by_slice)
 
     live = [r for r in runs if r.is_live]
-    recent = [r for r in runs if not r.is_live][:8]
+    not_live = [r for r in runs if not r.is_live]
+
+    # Featured run priority: live > shipped/blocked (real conveyor runs) > legacy > smoke.
+    def feature_priority(r: Run) -> int:
+        if r.is_live:                     return 0
+        if r.overall_status in ("shipped", "blocked"): return 1
+        if r.overall_status == "legacy":  return 2
+        return 3  # smoke
+    sorted_for_feature = sorted(
+        runs, key=lambda r: (feature_priority(r), -r.last_mtime)
+    )
+    featured = sorted_for_feature[0] if sorted_for_feature else None
+    # Build "recent" list: most-recent-first, excluding the featured run.
+    recent_pool = [r for r in not_live if not featured or r.run_id != featured.run_id][:8]
+
+    # Open issues: only from non-live runs that actually have something to report.
     open_issues = [
         {"run_id": r.run_id, "slice": r.slice, **i.__dict__}
         for r in runs[:6]
@@ -141,7 +156,8 @@ def collect(artifacts_root: Path) -> dict[str, Any]:
         "generated_at": time.time(),
         "artifacts_root": str(artifacts_root),
         "live": [r.to_dict() for r in live],
-        "recent": [r.to_dict() for r in recent],
+        "featured": featured.to_dict() if featured else None,
+        "recent": [r.to_dict() for r in recent_pool],
         "open_issues": open_issues,
         "history_by_slice": history_by_slice,
     }
@@ -213,8 +229,9 @@ def _scan_run(run_dir: Path) -> Run | None:
         phases = [ph for ph in phases if ph.id == "F3"]
 
     issues = _collect_issues(run_dir, phases)
-    overall = _overall_status(is_live, phases, issues)
-    summary = _summary_line(phases, issues, overall)
+    conveyor_state = _read_conveyor_state(run_dir)
+    overall = _overall_status(is_live, phases, issues, conveyor_state)
+    summary = _summary_line(phases, issues, overall, conveyor_state)
 
     return Run(
         run_id=run_id, kind=kind, slice=slice_name,
@@ -337,91 +354,129 @@ def _phase_detail(phase_id: str, path: Path) -> str:
 
 
 def _collect_issues(run_dir: Path, phases: list[Phase]) -> list[Issue]:
+    """Issues come from the conveyor — and only when the conveyor BLOCKED.
+
+    A shipped run has no issues, by definition. We deliberately ignore the
+    legacy validation.json / drift.json / contracts/diff.json artifacts; the
+    conveyor's gate log is the only source of truth.
+    """
     out: list[Issue] = []
-    val_path = run_dir / "validation.json"
-    if val_path.exists():
-        try:
-            data = json.loads(val_path.read_text())
-            for tier_key in ("t1", "t2", "t3", "t4"):
-                tier = data.get(tier_key) or {}
-                tags = tier.get("failure_tags") or []
-                for tag in tags:
-                    sev = "error" if tier_key in ("t1",) else "warn"
-                    msg = _fmt_tier_msg(tier_key, tier, tag)
-                    out.append(Issue(severity=sev, tag=tag, message=msg))
-        except Exception:
-            pass
+    conveyor_path = run_dir / "conveyor.json"
+    if not conveyor_path.exists():
+        return out
 
-    drift_path = run_dir / "drift.json"
-    if drift_path.exists():
-        try:
-            data = json.loads(drift_path.read_text())
-            for f in data.get("findings", []):
-                sev = f.get("severity", "warn")
-                tag = f.get("rule") or f.get("tag") or "drift"
-                msg = f.get("message") or json.dumps(f)
-                out.append(Issue(severity=sev, tag=tag, message=msg))
-        except Exception:
-            pass
+    try:
+        data = json.loads(conveyor_path.read_text())
+    except Exception:
+        return out
 
-    diff_path = run_dir / "contracts" / "diff.json"
-    if diff_path.exists():
-        try:
-            data = json.loads(diff_path.read_text())
-            s = data.get("summary") or {}
-            crit = s.get("critical", 0)
-            mat = s.get("material", 0)
-            if crit:
-                out.append(Issue(severity="error", tag="T2-CONTRACT-MISMATCH",
-                                 message=f"{crit} critical contract differences between personas"))
-            if mat:
-                out.append(Issue(severity="warn", tag="T2-CONTRACT-MISMATCH",
-                                 message=f"{mat} material contract differences between personas"))
-        except Exception:
-            pass
+    if data.get("shipped"):
+        return out  # no issues — the conveyor delivered
 
+    blocked_at = data.get("final_gate") or "?"
+    attempts = data.get("attempts", 0)
+    last_feedback = (data.get("last_gate_feedback") or "").strip()
+
+    headline = _gate_headline(blocked_at, last_feedback)
+    out.append(Issue(
+        severity="error",
+        tag=f"blocked at {blocked_at}",
+        message=f"After {attempts} attempt(s): {headline}",
+    ))
     return out
 
 
-def _fmt_tier_msg(tier_key: str, tier: dict, tag: str) -> str:
-    details = tier.get("details") or {}
-    if tier_key == "t1" and "java_files" in details:
-        return f"{tag} · {details['java_files']} java files emitted"
-    if tier_key == "t2" and "matched" in details:
-        return f"{tag} · {details.get('matched',0)}/{details.get('total',0)} assertions"
-    return tag
+def _gate_headline(gate: str, feedback: str) -> str:
+    """Render one human sentence describing why a gate blocked.
+
+    Reads the first informative line of the gate's feedback and condenses it.
+    """
+    if not feedback:
+        return f"{gate} gate failed (no feedback recorded)"
+
+    short = {
+        "code-arrived": "The model emitted zero Java files in its last attempt.",
+        "compile": "The emitted Java did not compile — see conveyor.json for the javac errors.",
+        "drift": "The emitted Java violated architectural rules (hex purity, OTel, abend semantics).",
+        "run": "The emitted Java compiled but failed to run against the fixture.",
+        "oracle-diff": "The emitted Java ran but its stdout did not match the curated expected-output.",
+    }.get(gate, f"The {gate} gate failed.")
+
+    # Try to pull a one-liner from the feedback (first non-empty line after the GATE header).
+    for line in feedback.splitlines():
+        line = line.strip()
+        if not line or line.startswith("GATE"):
+            continue
+        if line.startswith("```"):
+            continue
+        return f"{short} ({line[:140]})"
+    return short
 
 
-def _overall_status(is_live: bool, phases: list[Phase], issues: list[Issue]) -> str:
+def _read_conveyor_state(run_dir: Path) -> dict | None:
+    """Read conveyor.json if present. None signals a legacy/incomplete run."""
+    p = run_dir / "conveyor.json"
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text())
+    except Exception:
+        return None
+
+
+def _overall_status(is_live: bool, phases: list[Phase], issues: list[Issue],
+                    conveyor: dict | None) -> str:
+    """Map run state to one of: running | shipped | blocked | legacy | smoke.
+
+    - `running`  : a live in-flight run
+    - `shipped`  : conveyor.json says shipped=true
+    - `blocked`  : conveyor.json says shipped=false (or any unrecoverable issue)
+    - `legacy`   : a real run from before the conveyor existed — no conveyor.json
+    - `smoke`    : an F3-only smoke build
+    """
     if is_live:
         return "running"
-    errors = [i for i in issues if i.severity == "error"]
-    warns = [i for i in issues if i.severity == "warn"]
-    if errors:
-        return "blocked"
-    if warns:
-        return "issues"
-    return "ok"
+    if conveyor is not None:
+        return "shipped" if conveyor.get("shipped") else "blocked"
+    # No conveyor — distinguish smoke (F3 only) from legacy real runs.
+    has_f3_only = any(p.id == "F3" and p.status == "done" for p in phases)
+    has_more_than_f3 = any(p.id != "F3" and p.status == "done" for p in phases)
+    if has_f3_only and not has_more_than_f3:
+        return "smoke"
+    return "legacy"
 
 
-def _summary_line(phases: list[Phase], issues: list[Issue], overall: str) -> str:
-    if overall == "ok":
-        return "all phases pass"
+def _summary_line(phases: list[Phase], issues: list[Issue], overall: str,
+                  conveyor: dict | None) -> str:
+    """One human sentence describing the run's state. No internal jargon."""
+    if overall == "shipped":
+        attempts = (conveyor or {}).get("attempts", 1)
+        plural = "" if attempts == 1 else "s"
+        return f"Shipped on attempt {attempts}{('' if attempts == 1 else '')}: code compiles, follows the architecture, runs against the fixture, and matches the expected output." if attempts == 1 else \
+               f"Shipped after {attempts} attempt{plural}: code compiles, follows the architecture, runs against the fixture, and matches the expected output."
+
     if overall == "running":
         running = next((p for p in phases if p.status == "running"), None)
-        # If no new artifact in >60s, the persona is either truly thinking (Codex
-        # call subprocess can run 5-10m without disk writes) OR the process died.
-        # Surface the elapsed-since-last-write so the user can judge.
         last_done = max((p.mtime for p in phases if p.status == "done" and p.mtime), default=None)
+        running_label = running.label if running else "in flight"
         if last_done is not None:
             quiet = time.time() - last_done
             if quiet > 60:
-                quiet_str = f"{int(quiet // 60)}m{int(quiet % 60)}s" if quiet >= 60 else f"{int(quiet)}s"
-                return f"running {running.label} · last write {quiet_str} ago" if running else f"in flight · quiet {quiet_str}"
-        return f"running {running.label}" if running else "in flight"
-    headline = next((i for i in issues if i.severity == "error"),
-                    next((i for i in issues if i.severity == "warn"), None))
-    return f"{headline.tag}: {headline.message}" if headline else "no detail"
+                quiet_str = f"{int(quiet // 60)}m" if quiet >= 60 else f"{int(quiet)}s"
+                return f"Working on {running_label} (no progress in {quiet_str})."
+        return f"Working on {running_label}."
+
+    if overall == "blocked":
+        headline = next((i for i in issues if i.severity == "error"), None)
+        return headline.message if headline else "Blocked."
+
+    if overall == "smoke":
+        return "Smoke build — only the context pack was generated, no Codex run."
+
+    if overall == "legacy":
+        return "Older run, before the conveyor belt existed — no conveyor record kept."
+
+    return ""
 
 
 # ---- ETA --------------------------------------------------------------------
