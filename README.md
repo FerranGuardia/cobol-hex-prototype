@@ -22,7 +22,7 @@ pip install -e .
 
 # 3. Point at a COBOL corpus
 #    Default: assumes CardDemo cloned as sibling directory
-ln -s ../CardDemo corpus/CardDemo
+ln -s ../../CardDemo corpus/CardDemo  # relative path resolves from corpus/, so two levels up
 #    Or set COBOL_CORPUS env var to any path
 export COBOL_CORPUS="$(pwd)/corpus/CardDemo"
 
@@ -66,6 +66,8 @@ Eight phases, modeled after the `newABINA` Iria method:
 | T4 | Cost/file, time/file, human-fix rate | **Bounded; targets calibrated after Phase 5** |
 
 See [`SPEC.md`](SPEC.md) for the perfect-path target shape and [`FAILURES.md`](FAILURES.md) for the catalog of known failure modes (the actual face of the tool — see project doctrine).
+
+For corpus triage — which CardDemo programs are in step-1 scope, why, and which is the right starter slice — see [`docs/CANDIDATES.md`](docs/CANDIDATES.md). The triage is deterministic and regenerable via `python3 src/app/pipeline/candidates.py <corpus_root>`.
 
 ## Repository layout
 

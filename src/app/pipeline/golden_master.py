@@ -55,6 +55,7 @@ def _parse_readme_features(readme_text: str) -> list[str]:
 
 def build(cfg: RunConfig, run_id: str, source_file: Path) -> Path:
     """Produce `artifacts/<run_id>/golden_master.json`."""
+    source_file = source_file.resolve()
     sub_app_root = source_file.parent.parent
     jcl_dir = sub_app_root / "jcl"
     ddl_dir = sub_app_root / "ddl"

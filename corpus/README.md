@@ -7,7 +7,8 @@ Mount your COBOL source corpus here. The corpus is **not** part of this repo (li
 If you cloned `aws-samples/aws-mainframe-modernization-carddemo` as a sibling of this repo:
 
 ```bash
-ln -s ../CardDemo CardDemo
+# Note: relative symlinks resolve from corpus/, so use ../../CardDemo not ../CardDemo.
+ln -s ../../CardDemo CardDemo
 ```
 
 Then `COBOL_CORPUS=$(pwd)/corpus/CardDemo` in your `.env`.

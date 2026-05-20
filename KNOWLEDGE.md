@@ -125,8 +125,146 @@ Working principles for adding new signals:
 
 ---
 
+## 9. Specialized agents — engineer determinism instead of discovering it
+
+> User insight, 2026-05-20: "instead of assuming it will be deterministic, we try to **build** as much determinism as possible embedded on the pipeline... what can we make agents do, to transform those scripts and translate them more reliable... assuming there is no determinism but we know what we want in a pipeline of coordinated agents."
+
+The inversion: a single big LLM call is unreliable. A swarm of *small* specialists, each with one tiny job, each verifiable independently, gives compound reliability. Their *composition* is the determinism, not any one agent.
+
+### 9.1 Purpose-detection agents (read intent, not just mechanism)
+
+| Agent | Input | Output | Verifiable how |
+|---|---|---|---|
+| `PurposeAgent` | COBOL + README + JCL + comments | one paragraph: "this program exists to do X for business reason Y" | Cross-check with `IntentConsistencyAgent`; human sanity scan first 3 |
+| `ActorAgent` | source + JCL + CSD | who calls this? batch scheduler / CICS user / another program / event? | DD names in JCL ↔ FILE-CONTROL ↔ EXEC CICS RETURN |
+| `DomainClassifierAgent` | source + README | domain bucket: ETL, reporting, OLTP, batch maintenance, ... | Closed enum; multi-LLM majority vote |
+| `LifecycleAgent` | source | online vs batch vs hybrid; commit boundaries; restart-ability semantics | Static patterns: EXEC CICS RETURN, EXEC SQL COMMIT, COBOL `STOP RUN` |
+
+### 9.2 Behavioral-prediction agents (predict without running)
+
+| Agent | Input | Output | Verifiable how |
+|---|---|---|---|
+| `EdgeCaseEnumeratorAgent` | source | list of every conditional branch + a sample input exercising each | Compare count to CFG branch count |
+| `SymbolicExecutorAgent` | source + input record shape | predicted SQL sequence + output record shape for that input | Run on synthetic inputs; compare to multi-LLM consensus |
+| `FailureModeAgent` | source | list of error paths (SQLCA != 0, FILE STATUS != 00, MQ failure) with what the program does in each | Compare against `FAILURES.md` taxonomy |
+| `InvariantExtractorAgent` | source + DDL | loop invariants, pre/post conditions, FK invariants | Property-based tests in the generated Java |
+
+### 9.3 Cross-reference agents (corroborate against the world)
+
+| Agent | Input | Output | Verifiable how |
+|---|---|---|---|
+| `ReferenceCorroboratorAgent` | our slice + URL to abhi-ksh/aws-carddemo-modernized | side-by-side: where we agree on structure with their modernization, where we differ | Diff against their commit |
+| `SpecConsistencyAgent` | source + README | flags where README says X but code does Y | Manual review + counter-example |
+| `NameSemanticsAgent` | identifiers (program ID, paragraph names) | implied roles; flags mismatches with actual behavior | Closed pattern set (`COBTUPDT` ↔ "COBol Transaction UPDaTe") |
+
+### 9.4 Test-generation agents (produce verifiable artifacts)
+
+| Agent | Input | Output | Verifiable how |
+|---|---|---|---|
+| `TestVectorAgent` | source + edge cases + symbolic execution | JUnit @Test methods; Java MUST pass these | Tests run against generated Java |
+| `PropertyAgent` | DDL + DCL | property-based invariants (jqwik / quickcheck-style) | Generate random inputs, assert invariant holds |
+| `GoldenInputAgent` | source + DCL + DDL | realistic sample inputs (records) the program should accept | Diff against DCL types; FK validity check |
+| `OracleAgent` | source + reference modernizations (abhi-ksh, AWS docs) | "for input X, expected output is Y" derived from triangulation | Multi-source agreement count |
+
+### 9.5 Translation-quality agents (each polishes one layer)
+
+| Agent | Input | Output | Verifiable how |
+|---|---|---|---|
+| `ChunkBoundaryAgent` | source + complexity score | recommended chunk boundaries (DIVISION / SECTION / paragraph) | Span limit + 0 cross-chunk references |
+| `TypeMappingAgent` | PIC clauses | Java types with confidence + edge-case notes | Closed mapping table; flag overflows |
+| `SQLEquivalenceAgent` | one EXEC SQL block + DCL host vars | one Java method that issues equivalent parameterized SQL | Static AST equivalence on SQL after normalization |
+| `HexShapeAgent` | rough Java translation | proper layer assignment per method (domain/application/adapter/infra) | ArchUnit rules pass |
+| `OTelInstrumentationAgent` | translation | inserts spans + attributes at right boundaries | Coverage scanner: 100% adapter methods have spans |
+| `ProvenancePreserverAgent` | source + translation | provenance comments on each Java method with COBOL line range | Regex check |
+
+### 9.6 Refinement agents (loop until green)
+
+| Agent | Input | Output | Verifiable how |
+|---|---|---|---|
+| `CompileFixerAgent` | translation + `javac` errors | minimal-diff patch | Re-compile passes |
+| `HexViolationFixerAgent` | translation + ArchUnit violations | re-layered patch | ArchUnit passes |
+| `IdempotenceProverAgent` | translation | output of running translation through converter again | Diff: identical |
+| `DriftReducerAgent` | 3 divergent outputs + drift report | tightened prompt/context | Next 3-run drift below threshold |
+
+### 9.7 Adversarial / red-team agents (try to break it)
+
+| Agent | Input | Output | Verifiable how |
+|---|---|---|---|
+| `AdversarialReviewerAgent` | translation | "given input X (corner case), does Java still match COBOL?" — proposes counter-examples | Run the counter-example; if it breaks, file `T2-*` failure |
+| `HallucinationDetectorAgent` | translation | flags any Java method/import without a clear COBOL provenance line | Provenance comment check; LLM review of orphans |
+
+### 9.8 Pipeline shape implied by all of this
+
+```
+F1 Inventory
+F2 Capture (sibling docs)
+F3 Context Pack
+  └─ Purpose-detection agents fill metadata header
+F4 Golden Master
+  ├─ TestVectorAgent
+  ├─ PropertyAgent
+  ├─ OracleAgent (triangulation)
+  └─ EdgeCaseEnumeratorAgent
+F5 Convert (multi-stage)
+  ├─ ChunkBoundaryAgent → chunks
+  ├─ For each chunk:
+  │   ├─ TypeMappingAgent (data structures)
+  │   ├─ SQLEquivalenceAgent (every EXEC SQL)
+  │   ├─ Converter (orchestrator with persona)
+  │   ├─ HexShapeAgent (layer assignment)
+  │   ├─ OTelInstrumentationAgent (spans)
+  │   └─ ProvenancePreserverAgent (comments)
+  └─ Reconciler (merge chunks)
+F6 Validate
+  ├─ T1: invariants checks + CompileFixerAgent loop (max 2) + HexViolationFixerAgent loop (max 2)
+  ├─ T2: TestVectorAgent + OracleAgent comparison + AdversarialReviewerAgent counter-examples
+  ├─ T3: drift run + DriftReducerAgent
+  └─ T4: cost/time metrics from coordinator
+F7 Inventory update
+F8 Evidence gate
+  └─ HallucinationDetectorAgent + provenance audit
+```
+
+### 9.9 Cheap vs expensive agents (engineer first the cheap ones)
+
+**Cheap (deterministic, static analysis or closed enums):**
+- TypeMappingAgent (mostly a table)
+- ChunkBoundaryAgent (parser-driven)
+- ProvenancePreserverAgent (regex insertion)
+- HallucinationDetectorAgent (provenance regex)
+- HexViolationFixerAgent (ArchUnit + patch)
+- CompileFixerAgent (javac feedback loop)
+
+These six can be implemented WITHOUT additional LLM calls beyond the converter itself.
+
+**Medium (one LLM call, bounded):**
+- PurposeAgent, ActorAgent, LifecycleAgent
+- SQLEquivalenceAgent (one block at a time)
+- OTelInstrumentationAgent
+- IdempotenceProverAgent
+- FailureModeAgent
+- EdgeCaseEnumeratorAgent
+
+**Expensive (multi-LLM, multi-pass, large context):**
+- SymbolicExecutorAgent
+- OracleAgent (multi-source triangulation)
+- ReferenceCorroboratorAgent (reads abhi-ksh's repo)
+- AdversarialReviewerAgent
+- TestVectorAgent (generates JUnit)
+
+### 9.10 The compounding effect
+
+If each cheap agent is 90% reliable on its narrow job, and we have 6 of them gating the converter, the chance ALL six agree on a passing result is 0.9^6 ≈ 53%.
+
+But — and this is the point — we only ship when ALL six gates pass. So the **shipped output** is 100% gate-passing. The agents don't make the LLM better; they make us throw away the bad outputs faster, until the LLM produces one that passes all gates.
+
+This is the "engineer determinism into the pipeline" insight: **gates compound to certainty; the LLM is the noisy generator, the gates are the deterministic filter.**
+
+---
+
 ## Change log
 
 | Date | Entry |
 |---|---|
 | 2026-05-20 | Initial catalog created from user's creative brainstorm prompt + my reading of newABINA's Iria method. |
+| 2026-05-20 | §9 — specialized-agent architecture added in response to user's second creative brainstorm ("engineer determinism, don't assume it"). |

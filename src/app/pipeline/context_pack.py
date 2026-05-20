@@ -52,6 +52,7 @@ def _find_sibling_dir(start: Path, name: str) -> Path | None:
 
 def build(cfg: RunConfig, run_id: str, source_file: Path) -> Path:
     """Produce `artifacts/<run_id>/context_pack.md`."""
+    source_file = source_file.resolve()
     cobol = source_file.read_text(errors="replace")
     copy_targets = _extract_copy_targets(cobol)
     exec_sql_blocks = _extract_exec_sql_blocks(cobol)
