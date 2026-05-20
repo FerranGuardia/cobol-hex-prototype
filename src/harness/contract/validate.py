@@ -75,10 +75,27 @@ def load_schema() -> dict[str, Any]:
 
 
 def validate(contract: dict[str, Any]) -> ValidationResult:
-    """Run schema + canonical checks. Return structured findings."""
+    """Run schema + canonical checks. Return structured findings.
+
+    Never raises on bad input: any unexpected type inside the contract becomes
+    a `T1-VALIDATOR-INTERNAL` finding so the caller's retry loop can still
+    proceed instead of crashing the whole persona-call.
+    """
     findings: list[ValidationFinding] = []
 
-    # Schema
+    if not isinstance(contract, dict):
+        return ValidationResult(
+            ok=False,
+            findings=[ValidationFinding(
+                code="T1-SCHEMA-INVALID",
+                path="<root>",
+                message=f"contract is {type(contract).__name__}, expected object",
+            )],
+            schema_errors=1,
+            canonical_errors=0,
+            retry_prompt="The contract must be a JSON object.",
+        )
+
     schema = load_schema()
     validator = jsonschema.Draft202012Validator(schema)
     schema_errors = sorted(
@@ -90,8 +107,18 @@ def validate(contract: dict[str, Any]) -> ValidationResult:
             ValidationFinding(code="T1-SCHEMA-INVALID", path=path, message=err.message)
         )
 
-    # Canonical form
-    canonical_findings = _check_canonical(contract)
+    # Canonical form: belt-and-suspenders try/except so a surprise input shape
+    # doesn't take down the whole convert loop. If the schema check already
+    # caught it, we still get coverage; if it didn't, we surface a self-describing
+    # finding instead of a raw traceback.
+    try:
+        canonical_findings = _check_canonical(contract)
+    except Exception as exc:  # pragma: no cover — defensive
+        canonical_findings = [ValidationFinding(
+            code="T1-VALIDATOR-INTERNAL",
+            path="<root>",
+            message=f"canonical check raised {exc.__class__.__name__}: {exc}",
+        )]
     findings.extend(canonical_findings)
 
     ok = not findings
@@ -119,8 +146,12 @@ def _check_canonical(contract: dict[str, Any]) -> list[ValidationFinding]:
                 message=f"Array `{arr_path}` not sorted by `{key}`. Expected: {sorted(keys)}. Got: {keys}.",
             ))
 
-    for cls_idx, cls in enumerate(contract.get("classes", [])):
-        for m_idx, m in enumerate(cls.get("methods", [])):
+    for cls_idx, cls in enumerate(contract.get("classes", []) or []):
+        if not isinstance(cls, dict):
+            continue
+        for m_idx, m in enumerate(cls.get("methods", []) or []):
+            if not isinstance(m, dict):
+                continue
             sig = m.get("signature", "")
             err = _check_signature_canonical(sig)
             if err:
@@ -129,7 +160,8 @@ def _check_canonical(contract: dict[str, Any]) -> list[ValidationFinding]:
                     path=f"classes[{cls_idx}].methods[{m_idx}].signature",
                     message=f"`{sig}`: {err}",
                 ))
-            lines = m.get("cobol_provenance", {}).get("lines", "")
+            prov = m.get("cobol_provenance") or {}
+            lines = prov.get("lines", "") if isinstance(prov, dict) else ""
             if lines and not re.match(r"^\d+-\d+$", lines):
                 out.append(ValidationFinding(
                     code="T1-NON-CANONICAL-LINE-RANGE",
@@ -138,6 +170,20 @@ def _check_canonical(contract: dict[str, Any]) -> list[ValidationFinding]:
                 ))
 
     sa = contract.get("source_anchor", {})
+    # Schema requires source_anchor to be an object; defend against personas
+    # that emit it as a list/string anyway — surface as canonical finding rather
+    # than crashing the validate-and-retry loop.
+    if not isinstance(sa, dict):
+        out.append(ValidationFinding(
+            code="T1-NON-CANONICAL-SOURCE-ANCHOR",
+            path="source_anchor",
+            message=(
+                f"source_anchor must be a JSON object with `cobol_path` + `cobol_sha256`, "
+                f"got {type(sa).__name__}"
+            ),
+        ))
+        return out
+
     for k in ("cobol_sha256",):
         v = sa.get(k)
         if v and not _is_lowercase_sha256(v):
@@ -148,7 +194,7 @@ def _check_canonical(contract: dict[str, Any]) -> list[ValidationFinding]:
             ))
     for k in ("cobol_path",):
         v = sa.get(k, "")
-        if "\\" in v:
+        if isinstance(v, str) and "\\" in v:
             out.append(ValidationFinding(
                 code="T1-NON-CANONICAL-PATH",
                 path=f"source_anchor.{k}",

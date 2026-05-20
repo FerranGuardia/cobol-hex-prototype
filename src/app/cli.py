@@ -272,6 +272,19 @@ def cmd_contract_diff(
         raise typer.Exit(1)
 
 
+@app.command("ui")
+def cmd_ui(
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(8787, "--port"),
+    no_open: bool = typer.Option(False, "--no-open", help="Don't auto-open the browser"),
+) -> None:
+    """Launch the editorial observatory dashboard on localhost."""
+    from app.ui.server import serve
+
+    cfg = _config_from_env()
+    serve(cfg.artifacts_dir, host=host, port=port, open_browser=not no_open)
+
+
 def main() -> None:  # entry point for `app` script
     try:
         app()

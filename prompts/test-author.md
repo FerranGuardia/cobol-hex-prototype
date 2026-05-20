@@ -20,27 +20,15 @@ You will be given a markdown **Context Pack** that contains, in this order:
 - The `schemas/public-contract.schema.json` (your contract output must validate against this).
 - The SPEC.md (the architectural target).
 
-You will **NOT** be given the code-author's generated Java files. If a future turn provides them, ignore the bodies — you may consult the public-contract.json the code-author emitted only to align test class names (see "Name alignment" below), never to copy assertions from.
+You will **NOT** be given the code-author's generated Java files. Render tests independently from the COBOL + SPEC + fixture + expected-output. The harness will extract a contract from your tests (which classes/methods you reference) and diff against a contract extracted from code-author's Java — disagreement is the signal.
 
 Treat the Context Pack and SPEC.md as the single source of truth.
 
 ## Outputs
 
-You emit **two artifacts**, in this order, each in its own fenced code block.
+You emit **tests, fixtures, and `pom.xml` only**. No JSON contract, no markdown commentary, no implementation Java. The harness will derive the contract from what you reference in your tests via AST extraction.
 
-### 1. The public contract you expect
-
-```json // contracts/public-contract.test-author.json
-{ ... a Contract object validating against schemas/public-contract.schema.json ... }
-```
-
-This contract is your independent prediction of the public API the Java translation should have. Build it bottom-up from the COBOL: every `EXEC SQL` block becomes a method on a driven port; every `FILE STATUS` value the program branches on becomes a postcondition; every COBOL paragraph that produces an observable output becomes a use-case method with a `postcondition` tied to the fixture. Set `generated_by` to `"test-author"`.
-
-The harness will diff your contract against the code-author's contract. **Disagreement is the signal we want.** Do not try to guess what the code-author will produce; produce what *you* think the COBOL prescribes.
-
-### 2. Test files and build descriptor
-
-After the contract, emit each test/build file as a fenced code block tagged with its relative path under `output/`:
+Emit each test/build file as a fenced code block tagged with its relative path under `output/`:
 
 ````
 ```java // <relative path under output/>
@@ -95,19 +83,20 @@ If a tag's tests are absent (e.g. no SQL in this slice → no `T2-sql-trace` tes
 
 ## Name alignment with the code-author
 
-The harness runs the contract diff before `mvn test`. If your contract's class FQCNs match the code-author's, tests run as-is. If they differ:
+The harness extracts a contract from the classes your tests REFERENCE (via imports + invocations) and diffs against the contract extracted from the code-author's emitted Java. If the FQCNs match, the tests will compile against the emitted code. If they differ:
 
 - If the difference is **purely naming** (your `CardReader` vs. their `CardFilePort`), the harness emits a `T2-CONTRACT-MISMATCH` warning and either (a) auto-renames test references via the diff (when the structural shape matches) or (b) escalates to the Investigator (when the shape itself differs — e.g. you predicted one port, they emitted two).
 - If the difference is **structural** (you expected 2 ports, they emitted 1), the slice does NOT proceed to `mvn test`. The mismatch is the bug.
 
-You do not handle the mismatch directly. Produce what the COBOL prescribes; let the harness arbitrate.
+You do not handle the mismatch directly. Produce what the COBOL prescribes; let the harness arbitrate. Use full FQCNs in test imports (`import com.example.cobol.<slice>.domain.port.CardFilePort;`) so the extractor can pick them up cleanly.
 
 ## What you must NOT do
 
 - Do not output Java implementation files. You produce **tests only**.
-- Do not stub out tests with `@Disabled` or `Assumptions.assumeTrue(false)`. If you can't write a test, omit it and explain in the contract's `kvote_metadata` or as a paragraph comment in the test class.
+- Do not emit any JSON contract block — the harness derives it from your tests.
+- Do not stub out tests with `@Disabled` or `Assumptions.assumeTrue(false)`. If you can't write a test, omit it; explain in a comment in the test class.
 - Do not write tests against features the COBOL does not have (no "what if SQL had a JOIN" — there's no JOIN in CBACT02C).
-- Do not infer postconditions from the SPEC.md alone — every postcondition must trace to a specific COBOL statement (`PERFORM`, `DISPLAY`, `READ`, `WRITE`, etc.) recorded in `cobol_provenance`.
+- Do not infer postconditions from the SPEC.md alone — every postcondition must trace to a specific COBOL statement (`PERFORM`, `DISPLAY`, `READ`, `WRITE`, etc.).
 - Do not silently fix "obviously broken COBOL" — write tests that capture the literal observed COBOL behavior; flag oddities in a `// COBOL-quirk:` comment.
 
 ## Test taxonomy (the 4-tag T2 ladder from SPEC.md)

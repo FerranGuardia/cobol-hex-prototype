@@ -72,12 +72,7 @@ TEXT_BLOCK = re.compile(
     r"```text\s+//\s*(?P<path>[^\n]+)\n(?P<body>.*?)```",
     re.DOTALL,
 )
-JSON_CONTRACT_BLOCK = re.compile(
-    r"```json\s+//\s*(?P<path>contracts/[^\n]+)\n(?P<body>.*?)```",
-    re.DOTALL,
-)
 
-MAX_VALIDATE_RETRIES = 3
 Mode = Literal["two-pass-blind", "single-pass"]
 
 
@@ -142,11 +137,33 @@ def run(
     _save_persona(artifacts_root, test_result)
     _save_backcompat_codex_response(artifacts_root, code_result)
 
-    # Contract diff
+    # AST-extract a contract from each persona's emitted tree (v2).
+    from harness.contract.extract import (
+        extract_from_code_tree,
+        extract_from_test_tree,
+    )
     from harness.contract.diff import diff_contracts
-    diff_result = diff_contracts(code_result.majority_contract, test_result.majority_contract)
+
     contracts_dir = artifacts_root / "contracts"
     contracts_dir.mkdir(parents=True, exist_ok=True)
+    output_root = artifacts_root / "output"
+
+    slice_name = source_file.stem.upper()
+
+    code_contract = extract_from_code_tree(
+        output_root, slice_name=slice_name, run_id=run_id, cobol_source=source_file,
+    )
+    test_contract = extract_from_test_tree(
+        output_root, slice_name=slice_name, run_id=run_id, cobol_source=source_file,
+    )
+    (contracts_dir / "public-contract.code-author.json").write_text(
+        json.dumps(code_contract, indent=2, sort_keys=True)
+    )
+    (contracts_dir / "public-contract.test-author.json").write_text(
+        json.dumps(test_contract, indent=2, sort_keys=True)
+    )
+
+    diff_result = diff_contracts(code_contract, test_contract)
     (contracts_dir / "diff.json").write_text(
         json.dumps(diff_result.to_dict(), indent=2)
     )
@@ -155,15 +172,23 @@ def run(
     (artifacts_root / "f5_summary.json").write_text(json.dumps({
         "mode": mode,
         "k": k,
-        "code_author": code_result.summary(),
-        "test_author": test_result.summary(),
+        "code_author": {
+            **code_result.summary(),
+            "extracted_classes": len(code_contract.get("classes", [])),
+            "extracted_ports": len(code_contract.get("ports", [])),
+        },
+        "test_author": {
+            **test_result.summary(),
+            "extracted_classes": len(test_contract.get("classes", [])),
+            "extracted_ports": len(test_contract.get("ports", [])),
+        },
         "contract_diff": {
             "ok": diff_result.ok,
             "summary": diff_result.summary,
         },
     }, indent=2))
 
-    return artifacts_root / "output"
+    return output_root
 
 
 # ---- per-persona orchestration ------------------------------------------------
@@ -237,57 +262,28 @@ def _single_persona_call(
     kvote_idx: int,
     k_total: int,
 ) -> tuple[dict[str, Any], dict[str, str], dict[str, Any], bool]:
-    """One Codex call with validate-and-retry. Returns (contract, files_dict, raw_response, contract_valid)."""
-    from harness.contract.validate import validate
+    """One Codex call. Returns (empty_contract, files_dict, raw_response, True).
 
+    v2 — personas no longer emit contracts; the harness extracts them from the
+    files post-hoc. Retry-on-no-files is a separate concern; the caller decides
+    whether 0 files means re-run.
+    """
     current_prompt = base_prompt
-    # When K>1, add a benign run-marker so even at temp=0 the model has a tiny
-    # input perturbation; in practice this rarely changes output, but it
-    # ensures the K calls aren't truly identical bytes-in.
     if k_total > 1:
         current_prompt = f"{base_prompt}\n\n<!-- k-vote run {kvote_idx + 1} of {k_total} -->\n"
 
-    last_response: dict[str, Any] = {}
-    last_files: dict[str, str] = {}
-    last_contract: dict[str, Any] = {}
-    contract_valid = False
-
-    for attempt in range(MAX_VALIDATE_RETRIES + 1):
-        last_response = coord.call_codex(
-            prompt=current_prompt, context=context, force=(force or attempt > 0),
-        )
-        final_message = str(last_response.get("final_message") or last_response.get("stdout") or "")
-        last_files, last_contract = _parse_response(final_message)
-        if last_contract is None:
-            current_prompt = (
-                base_prompt
-                + f"\n\n<!-- k-vote run {kvote_idx + 1} of {k_total} -->\n"
-                + "\n\nRETRY: Your previous response did not contain a parseable JSON contract block. "
-                + "Emit the complete Java + the contracts/public-contract."
-                + persona
-                + ".json block as required by the persona spec."
-            )
-            last_contract = {}
-            continue
-        validation = validate(last_contract)
-        if validation.ok:
-            contract_valid = True
-            break
-        # Attach the retry-prompt as a postscript to nudge the persona.
-        current_prompt = (
-            base_prompt
-            + f"\n\n<!-- k-vote run {kvote_idx + 1} of {k_total} -->\n"
-            + "\n\n"
-            + validation.retry_prompt
-        )
-
-    return last_contract or {}, last_files, last_response, contract_valid
+    raw_response = coord.call_codex(prompt=current_prompt, context=context, force=force)
+    final_message = str(raw_response.get("final_message") or raw_response.get("stdout") or "")
+    files = _parse_response(final_message)
+    # contract is empty here — extraction happens after disk write in run().
+    return {}, files, raw_response, True
 
 
-def _parse_response(text: str) -> tuple[dict[str, str], dict[str, Any] | None]:
-    """Extract Java + xml + text + contract blocks from one Codex response.
+def _parse_response(text: str) -> dict[str, str]:
+    """Extract Java + xml + text blocks from one Codex response.
 
-    Returns (files_dict, contract_or_None). files_dict maps relpath -> body.
+    Returns files_dict mapping relpath -> body. v2: no contract parsing — the
+    persona prompts forbid contract emission and the harness AST-extracts.
     """
     files: dict[str, str] = {}
     for m in JAVA_BLOCK.finditer(text):
@@ -296,15 +292,7 @@ def _parse_response(text: str) -> tuple[dict[str, str], dict[str, Any] | None]:
         files[m.group("path").strip()] = m.group("body")
     for m in TEXT_BLOCK.finditer(text):
         files[m.group("path").strip()] = m.group("body")
-
-    contract_match = JSON_CONTRACT_BLOCK.search(text)
-    if not contract_match:
-        return files, None
-    body = contract_match.group("body").strip()
-    try:
-        return files, json.loads(body)
-    except json.JSONDecodeError:
-        return files, None
+    return files
 
 
 def _pick_majority_run(contracts: list[dict[str, Any]], majority: dict[str, Any]) -> int:
@@ -340,11 +328,9 @@ def _save_persona(artifacts_root: Path, result: PersonaResult) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(body)
 
-    # Write the majority contract.
-    contract_path = contracts_dir / f"public-contract.{result.persona}.json"
-    contract_path.write_text(
-        json.dumps(result.majority_contract, indent=2, sort_keys=True)
-    )
+    # v2: contracts are AST-extracted from emitted Java in run(), not from the
+    # persona output. Skip writing per-persona contracts here — the run()
+    # function writes the extracted versions after both personas land on disk.
 
     # Per-K K-vote metadata (if K>1).
     if result.k > 1:
