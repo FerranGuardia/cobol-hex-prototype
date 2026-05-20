@@ -5,6 +5,78 @@ actually lands without our specialist agents.
 
 ---
 
+## Wave 2 — CBACT02C re-run with code-author persona (2026-05-20, later)
+
+### Configuration
+
+| Setting | Value |
+|---|---|
+| Source | `corpus/CardDemo/app/cbl/CBACT02C.cbl` (same as wave-1) |
+| Pipeline phases run | F3 context-pack, F4 golden-master, F5 convert, F6 validate (same as wave-1) |
+| Model | Codex default (`gpt-5.5` per env defaults) |
+| Reasoning effort | `high` |
+| Temperature | `0` |
+| Persona | **`prompts/code-author.md`** (was `prompts/converter.md` in wave-1; rewritten to emit a contract.json + blind to test-author) |
+| Specialist agents wired | **none** (still pre-harness; Phase A Python lands next turn) |
+| Run ID | `20260520-131325-d290cbbb` |
+
+### Cost / size
+
+| Metric | Wave-1 | Wave-2 | Delta |
+|---|---|---|---|
+| Java files emitted | 13 | 13 | same |
+| Generated Java LOC | 537 | 636 | **+99 (+18.4%)** richer |
+| Total response chars | 18,153 | 52,610 | +34,457 (≈ the contract block) |
+| Wall-clock | ~5 min | 586s (~9.8 min) | ~2× (extra reasoning for contract) |
+| Contract.json emitted | n/a | **31,642 chars, 1 block at the expected path** | new |
+
+Token count not directly extracted (Codex CLI doesn't expose it); chars are a usable proxy.
+
+### Acceptance tier readout
+
+| Tier | Status | Details |
+|---|---|---|
+| **T1 — invariants** | ✅ **pass** | Same as wave-1: 13 files, hex layout, 2 cobol-id hits under threshold |
+| **T2 — semantic equivalence** | ❌ fail (0/41) | Same validator-quality issue as wave-1; not a code-quality regression |
+| **T3 — drift** | ⏭ skipped | (Phase A K-vote will replace this) |
+| **T4 — economics** | ✅ pass | Placeholder; same as wave-1 |
+| **Overall** | ❌ fail (T2 blocks) | Same root cause as wave-1: F4 over-inclusive golden-master + F6 naive validator |
+
+### What's strictly better than wave-1
+
+1. **Contract emitted at the right path** — `contracts/public-contract.code-author.json`, 1 block, no extras. The persona instruction was followed precisely without any harness validate-and-retry in place.
+2. **Contract validates against `schemas/public-contract.schema.json` with ZERO errors** — Codex's `high` reasoning effort respects strict JSON Schema constraints on the first try. This is the biggest finding: it raises confidence that the Phase A validate-and-retry will rarely fire, lowering the worst-case cost projection.
+3. **SHA-256 source anchors verified correct** — `cobol_sha256` and copybook `sha256` both byte-equal to actual file hashes. Codex computed them, didn't hallucinate them. The run_id prefix matches the COBOL SHA prefix because the coordinator seeds run_id from source hash (deterministic by design).
+4. **Java translation is more faithful to COBOL paragraphs.** `ReadCardFileUseCase` now exposes explicit `abendProgram()`, `displayIoStatus()`, `handleIoError()` helper methods mirroring COBOL paragraphs `1500-ABEND-PROGRAM`, `1100-DISPLAY-IO-STATUS`, and FILE STATUS branches. Wave-1 conflated these.
+5. **SPEC compliance up.** Span naming changed from `"CBACT02C execute"` to `"com.example.cobol.cbact02c.application.usecase.ReadCardFileUseCase.execute"` (matches SPEC §OpenTelemetry shape `<package>.<usecase>.<operation>`). Class naming changed from `Cbact02cBatchApplication` to `Cbact02cBatchRunner` (matches SPEC §Soft conventions `BatchRunner`).
+6. **Provenance updated cleanly** — every generated file references `prompts/code-author.md` and includes the `Run ID:` line. No stale references to the old persona.
+
+### Naming drift — signal, not noise
+
+The DISPLAY-output port renamed: wave-1 `ExecutionOutputPort` → wave-2 `ProgramOutputPort` (matching adapter and field also renamed). Both names are defensible; neither is wrong. **This is exactly the kind of label-disagreement the two-pass design will surface.** When test-author runs blind on this same COBOL it will likely pick a third name (`StdoutPort`? `DisplayPort`?), the contract-diff will flag `T2-CONTRACT-MISMATCH`, and the Investigator will adjudicate (Phase A wiring).
+
+### Things worth flagging
+
+- **Likely T1-OVER-ABSTRACTION**: contract declares `CardFilePortFactory` as a `port` with `justification: "crosses-external-boundary"`. Factories aren't normally ports. Phase A's harness check on the hex pragmatism rule should surface this.
+- **`source_anchor` lacks `fixture` and `expected_output`** — these aren't in the Context Pack yet (F3 doesn't supply them). Codex correctly *omitted* them rather than inventing paths. Once F3 includes them, these fields will populate.
+- **Wall-clock ~2× wave-1** — extra reasoning for the contract block. Within the 600s Codex timeout. Acceptable for step-1 scope per the `feedback-cost-vs-rework` principle.
+
+### Decisions taken from this wave
+
+1. **The persona rewrite passed regression with strict improvement on every axis.** Continue with the Phase A harness build.
+2. **Reduce confidence in the validate-and-retry being a hot path** — Codex hits schema first-try. Implement the retry loop anyway (defense in depth) but expect retry rate < 5% on `high` reasoning effort.
+3. **Add `fixture` + `expected_output` to F3 Context Pack** before any test-author run — otherwise test-author can't ground postconditions in external data.
+4. **K-vote calibration target**: at temp=0 + same prompt, what's Codex's run-to-run variance? Wave-2 is one data point. Two more rapid same-input runs would calibrate the K-vote agreement-rate threshold. Cheap experiment (~$0 since cached or sub-cached).
+
+### Artifacts
+
+- New run dir: `artifacts/20260520-131325-d290cbbb/`
+- Contract: `artifacts/20260520-131325-d290cbbb/contracts/public-contract.code-author.json`
+- Java tree: `artifacts/20260520-131325-d290cbbb/output/com/example/cobol/cbact02c/`
+- File-by-file diff vs wave-1: 13 files differ (2 rename pairs, 9 byte-level differences), 0 missing, 0 extra in the new tree.
+
+---
+
 ## Wave 1 — CBACT02C (2026-05-20)
 
 ### Configuration

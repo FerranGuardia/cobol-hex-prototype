@@ -1,4 +1,11 @@
-"""F5 — invoke Codex with the converter persona + context pack."""
+"""F5 — invoke Codex with the code-author persona + context pack.
+
+NOTE: This is the *single-pass* legacy entry point that wave-1 used. The Phase-A
+two-pass orchestration (code-author ‖ test-author with K-vote and contract-diff)
+will live in a sibling module and call into this one as one of two parallel
+generators. For now this module continues to drive single-pass wave-1
+reproducibility while the new pieces land.
+"""
 from __future__ import annotations
 
 import re
@@ -7,7 +14,7 @@ from pathlib import Path
 from app.core.coordinator import Coordinator
 from app.core.schemas import RunConfig
 
-CONVERTER_PROMPT = Path(__file__).resolve().parents[3] / "prompts" / "converter.md"
+CODE_AUTHOR_PROMPT = Path(__file__).resolve().parents[3] / "prompts" / "code-author.md"
 
 # Regex that extracts ```java ... ``` fenced blocks tagged with a relative path comment.
 JAVA_BLOCK = re.compile(
@@ -28,7 +35,7 @@ def run(cfg: RunConfig, run_id: str, source_file: Path, *, force: bool = False) 
             f"context_pack.md missing; run `app context-pack --file {source_file}` first"
         )
 
-    prompt = CONVERTER_PROMPT.read_text()
+    prompt = CODE_AUTHOR_PROMPT.read_text()
     context = context_pack_path.read_text()
 
     result = coord.call_codex(prompt=prompt, context=context, force=force)

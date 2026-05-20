@@ -16,6 +16,7 @@ dependencies = [
     "pydantic>=2.7",
     "rich>=13.7",
     "javalang>=0.13.0",   # Java AST for T3 equivalence checks
+    "jsonschema>=4.22",   # contract schema validation (harness/contract/validate.py)
     "python-dotenv>=1.0",
 ]
 

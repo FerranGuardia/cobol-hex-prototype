@@ -1,0 +1,395 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cobol-hex-prototype.local/schemas/public-contract.schema.json",
+  "title": "Public Contract",
+  "description": "The narrow channel between the code-author and test-author personas. Both emit one of these per slice in isolation from each other. The harness diffs the two contracts; disagreement is the signal that the COBOL source admits two different interpretations of its public behavior. K-vote majority across N runs is also emitted as a single Contract with generated_by='kvote-majority'.",
+  "type": "object",
+  "required": ["slice", "generated_by", "generation_run_id", "source_anchor", "classes", "ports"],
+  "additionalProperties": false,
+  "properties": {
+    "slice": {
+      "type": "string",
+      "description": "COBOL program name with no extension, uppercase. E.g. 'CBACT02C'.",
+      "pattern": "^[A-Z][A-Z0-9]*$"
+    },
+    "generated_by": {
+      "type": "string",
+      "enum": ["code-author", "test-author", "kvote-majority", "reverse-translator-roundtrip"]
+    },
+    "generation_run_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}-[0-9]{6}-[a-f0-9]{8}$",
+      "description": "Pipeline run identifier. Matches the artifacts/<run_id>/ directory."
+    },
+    "kvote_metadata": {
+      "type": "object",
+      "description": "Present only when generated_by='kvote-majority'. Records the K input contracts and per-field agreement rate.",
+      "required": ["k", "input_run_ids", "field_agreement"],
+      "additionalProperties": false,
+      "properties": {
+        "k": {"type": "integer", "minimum": 3, "maximum": 11},
+        "input_run_ids": {"type": "array", "items": {"type": "string"}, "minItems": 3},
+        "field_agreement": {
+          "type": "object",
+          "description": "Per-field agreement rate (0.0-1.0). Fields below threshold (default 0.6) are flagged as T3-KVOTE-DIVERGENCE.",
+          "additionalProperties": {"type": "number", "minimum": 0.0, "maximum": 1.0}
+        }
+      }
+    },
+    "source_anchor": {
+      "type": "object",
+      "description": "Hashes of every source artifact that influenced this contract. Used to detect upstream changes that invalidate the contract.",
+      "required": ["cobol_path", "cobol_sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "cobol_path": {"type": "string"},
+        "cobol_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "copybooks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "sha256"],
+            "additionalProperties": false,
+            "properties": {
+              "name": {"type": "string"},
+              "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+            }
+          }
+        },
+        "jcl": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "sha256"],
+            "additionalProperties": false,
+            "properties": {
+              "path": {"type": "string"},
+              "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+            }
+          }
+        },
+        "dcl": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "sha256"],
+            "additionalProperties": false,
+            "properties": {
+              "path": {"type": "string"},
+              "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+            }
+          }
+        },
+        "ddl": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "sha256"],
+            "additionalProperties": false,
+            "properties": {
+              "path": {"type": "string"},
+              "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+            }
+          }
+        },
+        "fixture": {
+          "type": "object",
+          "description": "Input data fixture used to derive postconditions.",
+          "required": ["path", "sha256"],
+          "additionalProperties": false,
+          "properties": {
+            "path": {"type": "string"},
+            "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "row_count": {"type": "integer", "minimum": 0}
+          }
+        },
+        "expected_output": {
+          "type": "object",
+          "description": "Hand-curated golden output. Load-bearing oracle for T2-EQUIVALENCE.",
+          "required": ["path", "sha256"],
+          "additionalProperties": false,
+          "properties": {
+            "path": {"type": "string"},
+            "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+          }
+        }
+      }
+    },
+    "classes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/Class"}
+    },
+    "ports": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/Port"}
+    },
+    "archunit_assertions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["rule", "expr"],
+        "additionalProperties": false,
+        "properties": {
+          "rule": {"type": "string"},
+          "expr": {"type": "string", "description": "ArchUnit DSL expression (Java string)."}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "Class": {
+      "type": "object",
+      "required": ["fqcn", "kind", "methods"],
+      "additionalProperties": false,
+      "properties": {
+        "fqcn": {
+          "type": "string",
+          "pattern": "^com\\.example\\.cobol\\.[a-z][a-z0-9-]*(\\.[a-zA-Z][a-zA-Z0-9]*)+$",
+          "description": "Fully qualified class name. Package follows the SPEC.md convention."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "domain-model",
+            "domain-port",
+            "usecase",
+            "adapter-in",
+            "adapter-out",
+            "infra-config",
+            "infra-observability"
+          ]
+        },
+        "constructor": {
+          "type": "array",
+          "description": "Constructor parameters for DI. Empty for static / no-arg classes.",
+          "items": {
+            "type": "object",
+            "required": ["param", "type"],
+            "additionalProperties": false,
+            "properties": {
+              "param": {"type": "string", "pattern": "^[a-z][a-zA-Z0-9]*$"},
+              "type": {"type": "string"}
+            }
+          }
+        },
+        "methods": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/Method"}
+        }
+      }
+    },
+    "Method": {
+      "type": "object",
+      "required": ["signature", "cobol_provenance"],
+      "additionalProperties": false,
+      "properties": {
+        "signature": {
+          "type": "string",
+          "description": "Canonical Java method signature. No body. Single spaces between tokens. Modifiers in JLS order: public/protected/private static final abstract. Return type before name. Generic params right-bound to type (e.g. List<String>)."
+        },
+        "cobol_provenance": {
+          "type": "object",
+          "required": ["file", "lines"],
+          "additionalProperties": false,
+          "properties": {
+            "file": {"type": "string", "description": "COBOL source path that this method derives from."},
+            "lines": {"type": "string", "pattern": "^[0-9]+-[0-9]+$"},
+            "paragraph": {"type": "string", "description": "COBOL PROCEDURE DIVISION paragraph name, if applicable."}
+          }
+        },
+        "throws": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Declared checked exceptions, FQCN, sorted alphabetically."
+        },
+        "spans_emitted": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "attributes"],
+            "additionalProperties": false,
+            "properties": {
+              "name": {"type": "string", "description": "OTel span name."},
+              "attributes": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Required attribute keys on this span. Sorted alphabetically."
+              }
+            }
+          }
+        },
+        "side_effects": {
+          "type": "array",
+          "description": "Ordered list of observable side effects. Ordering is part of the contract.",
+          "items": {"$ref": "#/$defs/SideEffect"}
+        },
+        "postconditions": {
+          "type": "array",
+          "description": "Assertable postconditions tied to fixture data. Load-bearing for T2-FIXTURE and T2-EQUIVALENCE checks.",
+          "items": {"$ref": "#/$defs/Postcondition"}
+        },
+        "exception_conditions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["when", "throws"],
+            "additionalProperties": false,
+            "properties": {
+              "when": {"type": "string", "description": "Triggering condition in plain English; deterministic phrasing required."},
+              "throws": {"type": "string", "description": "FQCN of the exception thrown."},
+              "message_contains": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "SideEffect": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "port", "method", "ordering"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"const": "port-call"},
+            "port": {"type": "string", "description": "Port FQCN."},
+            "method": {"type": "string", "description": "Port method signature."},
+            "ordering": {"type": "string", "description": "E.g. '1', '2..N (loop)', 'inside-loop after readNext'."}
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "target", "ordering"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"const": "stdout"},
+            "target": {"type": "string", "description": "Description of what is printed."},
+            "ordering": {"type": "string"}
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "path", "ordering"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"const": "file-write"},
+            "path": {"type": "string"},
+            "ordering": {"type": "string"}
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "statement_class", "ordering"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"const": "sql-execute"},
+            "statement_class": {
+              "enum": ["select", "insert", "update", "delete", "cursor-open", "cursor-fetch", "cursor-close"]
+            },
+            "table": {"type": "string"},
+            "exec_sql_anchor": {
+              "type": "object",
+              "description": "Anchor back to the EXEC SQL block in COBOL this side effect implements.",
+              "required": ["file", "lines"],
+              "additionalProperties": false,
+              "properties": {
+                "file": {"type": "string"},
+                "lines": {"type": "string", "pattern": "^[0-9]+-[0-9]+$"}
+              }
+            },
+            "ordering": {"type": "string"}
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "state_field", "ordering"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"const": "state-mutation"},
+            "state_field": {"type": "string", "description": "FQCN.field that is mutated."},
+            "from": {"type": "string"},
+            "to": {"type": "string"},
+            "ordering": {"type": "string"}
+          }
+        }
+      ]
+    },
+    "Postcondition": {
+      "type": "object",
+      "required": ["on_fixture", "observable"],
+      "additionalProperties": false,
+      "properties": {
+        "on_fixture": {
+          "type": "string",
+          "description": "Fixture path that this postcondition references."
+        },
+        "observable": {
+          "type": "string",
+          "enum": ["stdout", "file", "sql-trace", "return-value", "exception", "span-attributes"]
+        },
+        "expected_anchor": {
+          "type": "string",
+          "description": "Path to the curated expected-output file. REQUIRED when observable is 'stdout' or 'file'. Load-bearing for T2-EQUIVALENCE."
+        },
+        "row_count": {"type": "integer", "minimum": 0},
+        "expected_value": {
+          "description": "Used for return-value or exception observables. For exception, the value is a {exception_fqcn, message_contains} object."
+        }
+      }
+    },
+    "Port": {
+      "type": "object",
+      "required": ["fqcn", "methods", "external_boundary", "justification"],
+      "additionalProperties": false,
+      "properties": {
+        "fqcn": {
+          "type": "string",
+          "pattern": "^com\\.example\\.cobol\\.[a-z][a-z0-9-]*\\.domain\\.port\\.[A-Z][A-Za-z0-9]*$"
+        },
+        "external_boundary": {
+          "type": "string",
+          "enum": [
+            "file:fixed-width",
+            "file:variable",
+            "db:sql",
+            "db:cursor",
+            "queue:mq",
+            "console:stdout",
+            "console:stderr",
+            "internal"
+          ]
+        },
+        "justification": {
+          "type": "string",
+          "enum": [
+            "crosses-external-boundary",
+            "multiple-implementations-in-use",
+            "runtime-behavior-switch"
+          ],
+          "description": "Which of the three hex pragmatism rules (SPEC.md §Hex pragmatism rule) justifies this port."
+        },
+        "methods": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["signature"],
+            "additionalProperties": false,
+            "properties": {
+              "signature": {"type": "string"},
+              "cobol_provenance": {
+                "type": "object",
+                "required": ["file", "lines"],
+                "additionalProperties": false,
+                "properties": {
+                  "file": {"type": "string"},
+                  "lines": {"type": "string", "pattern": "^[0-9]+-[0-9]+$"}
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
