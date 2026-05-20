@@ -41,9 +41,10 @@ def run(cfg: RunConfig, run_id: str, source_file: Path, *, force: bool = False) 
         __import__("json").dumps(result, indent=2, default=str)
     )
 
-    stdout = str(result.get("stdout", ""))
+    # Prefer the final-message file (cleaner than stdout which has tool-call traces).
+    response_text = str(result.get("final_message") or result.get("stdout") or "")
     # Try to extract structured Java files. If none, dump as raw_output.txt for inspection.
-    matches = list(JAVA_BLOCK.finditer(stdout))
+    matches = list(JAVA_BLOCK.finditer(response_text))
     if matches:
         for m in matches:
             rel = m.group("path").strip()
@@ -52,6 +53,6 @@ def run(cfg: RunConfig, run_id: str, source_file: Path, *, force: bool = False) 
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(body)
     else:
-        (out_dir / "raw_output.txt").write_text(stdout)
+        (out_dir / "raw_output.txt").write_text(response_text)
 
     return out_dir
