@@ -4,7 +4,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
-build/
+/build/
 develop-eggs/
 dist/
 downloads/
@@ -44,6 +44,11 @@ htmlcov/
 .cache/
 artifacts/*
 !artifacts/.gitkeep
+
+# Vendored JARs — fetched on demand by harness/build/deps.py
+vendor/jars/*.jar
+# Compiled classes from compile gate
+**/classes/**/*.class
 
 # IDE
 .idea/

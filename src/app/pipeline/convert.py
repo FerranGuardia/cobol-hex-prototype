@@ -1,104 +1,94 @@
-"""F5 — two-pass orchestrator (code-author ‖ test-author).
+"""F5 — the conveyor belt.
 
-Drives the central rigor step of the pipeline:
+ONE persona writes Java. The harness gates check it sequentially:
 
-1. Build the context pack (caller's job — F3).
-2. Call **code-author** persona K times (parallel), each with validate-and-retry
-   up to 3 attempts. Take K-vote majority on the contracts.
-3. Call **test-author** persona K times (parallel), each with validate-and-retry.
-   Take K-vote majority.
-4. Diff the two majority contracts (`harness/contract/diff`). Any `critical`
-   entries = `T2-CONTRACT-MISMATCH`, surfaced to the Investigator.
+    code-arrived  →  compile  →  drift  →  run  →  oracle-diff
 
-Modes:
-- `two-pass-blind` (default): both personas, blind to each other. Maximal-rigor.
-- `single-pass`: code-author only. Legacy wave-1/2 behavior. Kept for regression.
+If any gate fails, the persona is re-called with the gate's feedback
+appended to the prompt. Up to MAX_TOTAL_RETRIES total re-calls across all
+gates. If we exhaust retries, the pipeline HARD FAILS visibly — no silent
+pass, no "well the contract validated" excuse. The only outputs are:
 
-K parameter:
-- K=1 (default): one call per persona. Cheap. Validate-and-retry still runs.
-- K>=3: K-vote on field-by-field majority. Each call uses `force=True` to bypass
-  the prompt-hash cache (the cache key is identical across K calls; force=True
-  guarantees each call is a fresh Codex invocation that may exhibit run-to-run
-  noise even at temp=0).
+  (a) a fully validated Java tree that compiles, passes hex/OTel rules,
+      runs against the fixture, and matches expected-output.txt; or
+  (b) a `gate_failure.json` artifact naming the gate that blocked + the
+      feedback that was being fed back when retries ran out.
 
-Parallelism:
-- Within a persona, K calls run in parallel via ThreadPoolExecutor (Codex calls
-  are subprocess.run, GIL-friendly).
-- Across personas, code-author and test-author run in parallel.
-- Worst-case wall-clock: max(code-author K parallel, test-author K parallel) ≈
-  ~5–10 min per slice regardless of K (subject to subprocess concurrency limits).
-
-Artifacts written:
-- `output/com/example/cobol/<slice>/**/*.java`         (from code-author)
-- `output/com/example/cobol/<slice>/src/test/**/*`     (from test-author)
-- `output/com/example/cobol/<slice>/pom.xml`           (from test-author)
-- `contracts/public-contract.code-author.json`         (K-vote majority)
-- `contracts/public-contract.test-author.json`         (K-vote majority)
-- `contracts/diff.json`                                (semantic diff)
-- `raw/code-author/response-<i>.json`                  (per-K raw responses)
-- `raw/test-author/response-<i>.json`                  (per-K raw responses)
-- `codex_response.json`                                (backwards-compat: code-author run 0)
+No parallel personas. No LLM contract-diff. No "two LLMs auditing each
+other." Just generation + deterministic gates + retry-with-feedback.
 """
 from __future__ import annotations
 
-import concurrent.futures
 import json
 import re
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 from app.core.coordinator import Coordinator
 from app.core.schemas import RunConfig
+from harness.gates import (
+    GateResult,
+    gate_code_arrived,
+    gate_compile,
+    gate_drift,
+    gate_oracle_diff,
+    gate_run,
+)
 
 PROMPTS_DIR = Path(__file__).resolve().parents[3] / "prompts"
 CODE_AUTHOR_PROMPT = PROMPTS_DIR / "code-author.md"
-TEST_AUTHOR_PROMPT = PROMPTS_DIR / "test-author.md"
-
-PERSONA_PROMPT: dict[str, Path] = {
-    "code-author": CODE_AUTHOR_PROMPT,
-    "test-author": TEST_AUTHOR_PROMPT,
-}
 
 JAVA_BLOCK = re.compile(
     r"```java\s+//\s*(?P<path>[^\n]+)\n(?P<body>.*?)```",
     re.DOTALL,
 )
-XML_BLOCK = re.compile(
-    r"```xml\s+//\s*(?P<path>[^\n]+)\n(?P<body>.*?)```",
-    re.DOTALL,
-)
-TEXT_BLOCK = re.compile(
-    r"```text\s+//\s*(?P<path>[^\n]+)\n(?P<body>.*?)```",
-    re.DOTALL,
-)
 
-Mode = Literal["two-pass-blind", "single-pass"]
+MAX_TOTAL_RETRIES = 6   # global cap across all gates for one slice
+Mode = Literal["conveyor-belt"]  # legacy "single-pass" / "two-pass-blind" removed
 
 
 @dataclass
-class PersonaResult:
-    persona: str
-    k: int
-    contracts: list[dict[str, Any]]
-    files: list[dict[str, str]]   # per-K {relpath: body} for emitted files (Java/XML/text)
-    raw_responses: list[dict[str, Any]]
-    majority_contract: dict[str, Any]
-    field_agreement: dict[str, float]   # K-vote per-field agreement; empty for K=1
-    divergent_fields: list[str]
-    contract_valid: list[bool]          # final-attempt validity per-K
-    chosen_files_index: int             # which K-run's files we ship (default 0)
+class GateLogEntry:
+    attempt: int            # 1-indexed attempt number
+    gate: str               # gate name (code-arrived, compile, drift, run, oracle-diff)
+    ok: bool
+    elapsed: float
+    detail_summary: str     # short human-readable detail
 
-    def summary(self) -> dict[str, Any]:
+
+@dataclass
+class ConveyorResult:
+    run_id: str
+    shipped: bool
+    final_gate: str | None   # which gate the pipeline ended on (passed it, or blocked there)
+    attempts: int
+    log: list[GateLogEntry] = field(default_factory=list)
+    raw_responses: list[dict[str, Any]] = field(default_factory=list)
+    last_gate_feedback: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
         return {
-            "persona": self.persona,
-            "k": self.k,
-            "files_emitted": len(self.files[self.chosen_files_index]) if self.files else 0,
-            "contract_valid_count": sum(1 for v in self.contract_valid if v),
-            "divergent_fields_count": len(self.divergent_fields),
-            "chosen_run_index": self.chosen_files_index,
+            "run_id": self.run_id,
+            "shipped": self.shipped,
+            "final_gate": self.final_gate,
+            "attempts": self.attempts,
+            "log": [
+                {
+                    "attempt": e.attempt,
+                    "gate": e.gate,
+                    "ok": e.ok,
+                    "elapsed": e.elapsed,
+                    "detail": e.detail_summary,
+                }
+                for e in self.log
+            ],
+            "last_gate_feedback": self.last_gate_feedback,
         }
 
+
+# ----------------------------------------------------------------------------
 
 def run(
     cfg: RunConfig,
@@ -106,11 +96,13 @@ def run(
     source_file: Path,
     *,
     force: bool = False,
-    k: int = 1,
-    mode: Mode = "two-pass-blind",
+    k: int = 1,                           # accepted for back-compat; ignored in conveyor mode
+    mode: Mode = "conveyor-belt",          # accepted for back-compat; only mode now
 ) -> Path:
-    """F5 entry. Returns the output dir."""
+    """F5 conveyor belt entry. Returns the output dir."""
+    del k, mode  # ignored — there is only one mode
     coord = Coordinator(cfg)
+
     context_pack_path = cfg.artifacts_dir / run_id / "context_pack.md"
     if not context_pack_path.exists():
         raise FileNotFoundError(
@@ -118,243 +110,194 @@ def run(
         )
     context = context_pack_path.read_text()
     artifacts_root = cfg.artifacts_dir / run_id
-
-    if mode == "single-pass":
-        code_result = _run_persona(coord, "code-author", context, k=1, force=force)
-        _save_persona(artifacts_root, code_result)
-        _save_backcompat_codex_response(artifacts_root, code_result)
-        return artifacts_root / "output"
-
-    # Two-pass blind: run both personas in parallel; each persona may further
-    # parallelize K calls internally.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        f_code = pool.submit(_run_persona, coord, "code-author", context, k=k, force=force)
-        f_test = pool.submit(_run_persona, coord, "test-author", context, k=k, force=force)
-        code_result = f_code.result()
-        test_result = f_test.result()
-
-    _save_persona(artifacts_root, code_result)
-    _save_persona(artifacts_root, test_result)
-    _save_backcompat_codex_response(artifacts_root, code_result)
-
-    # AST-extract a contract from each persona's emitted tree (v2).
-    from harness.contract.extract import (
-        extract_from_code_tree,
-        extract_from_test_tree,
-    )
-    from harness.contract.diff import diff_contracts
-
-    contracts_dir = artifacts_root / "contracts"
-    contracts_dir.mkdir(parents=True, exist_ok=True)
     output_root = artifacts_root / "output"
+    classes_out = artifacts_root / "classes"
+    raw_dir = artifacts_root / "raw" / "code-author"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+
+    base_prompt = CODE_AUTHOR_PROMPT.read_text()
 
     slice_name = source_file.stem.upper()
+    repo_root = Path(__file__).resolve().parents[3]
+    vendor_dir = repo_root / "vendor" / "jars"
+    fixture_path = _resolve_fixture(repo_root, slice_name)
+    expected_path = repo_root / "golden-outputs" / f"{slice_name}.expected-output.txt"
 
-    code_contract = extract_from_code_tree(
-        output_root, slice_name=slice_name, run_id=run_id, cobol_source=source_file,
-    )
-    test_contract = extract_from_test_tree(
-        output_root, slice_name=slice_name, run_id=run_id, cobol_source=source_file,
-    )
-    (contracts_dir / "public-contract.code-author.json").write_text(
-        json.dumps(code_contract, indent=2, sort_keys=True)
-    )
-    (contracts_dir / "public-contract.test-author.json").write_text(
-        json.dumps(test_contract, indent=2, sort_keys=True)
-    )
+    result = ConveyorResult(run_id=run_id, shipped=False, final_gate=None, attempts=0)
+    accumulated_feedback = ""
 
-    diff_result = diff_contracts(code_contract, test_contract)
-    (contracts_dir / "diff.json").write_text(
-        json.dumps(diff_result.to_dict(), indent=2)
-    )
+    for attempt in range(1, MAX_TOTAL_RETRIES + 2):  # +1 because attempt 1 is the initial call
+        result.attempts = attempt
 
-    # Aggregate F5 summary
-    (artifacts_root / "f5_summary.json").write_text(json.dumps({
-        "mode": mode,
-        "k": k,
-        "code_author": {
-            **code_result.summary(),
-            "extracted_classes": len(code_contract.get("classes", [])),
-            "extracted_ports": len(code_contract.get("ports", [])),
-        },
-        "test_author": {
-            **test_result.summary(),
-            "extracted_classes": len(test_contract.get("classes", [])),
-            "extracted_ports": len(test_contract.get("ports", [])),
-        },
-        "contract_diff": {
-            "ok": diff_result.ok,
-            "summary": diff_result.summary,
-        },
-    }, indent=2))
+        # Compose the prompt for this attempt: base + accumulated feedback.
+        prompt = base_prompt
+        if accumulated_feedback:
+            prompt = (
+                base_prompt
+                + "\n\n---\n\n## Retry feedback from the harness\n\n"
+                + "Your previous emission did not pass a deterministic gate. The harness "
+                + "fed back the exact failure below. Fix it in this next emission. Do not "
+                + "explain — just emit corrected Java. Do not regress on previously-passing gates.\n\n"
+                + accumulated_feedback
+            )
+
+        # Persona call.
+        raw_response = coord.call_codex(
+            prompt=prompt, context=context, force=(force or attempt > 1),
+        )
+        (raw_dir / f"response-{attempt - 1}.json").write_text(
+            json.dumps(raw_response, indent=2, default=str)
+        )
+        result.raw_responses.append(raw_response)
+
+        # Parse + write Java files to disk.
+        final_message = str(raw_response.get("final_message") or raw_response.get("stdout") or "")
+        files = _parse_response(final_message)
+        _wipe_and_save_java(output_root, files)
+
+        # Backcompat: still write codex_response.json at the root for UI / older tooling.
+        if attempt == 1 or result.shipped:
+            (artifacts_root / "codex_response.json").write_text(
+                json.dumps(raw_response, indent=2, default=str)
+            )
+
+        # GATE 1 — code arrived.
+        g = gate_code_arrived(output_root, slice_name=slice_name)
+        _log_gate(result, attempt, g)
+        if not g.ok:
+            accumulated_feedback = g.feedback
+            if attempt > MAX_TOTAL_RETRIES:
+                result.final_gate = "code-arrived"
+                result.last_gate_feedback = g.feedback
+                break
+            continue
+
+        # GATE 2 — compile.
+        g = gate_compile(output_root, vendor_dir=vendor_dir, classes_out=classes_out)
+        _log_gate(result, attempt, g)
+        if not g.ok:
+            accumulated_feedback = g.feedback
+            if attempt > MAX_TOTAL_RETRIES:
+                result.final_gate = "compile"
+                result.last_gate_feedback = g.feedback
+                break
+            continue
+
+        # GATE 3 — drift.
+        g = gate_drift(output_root, cobol_source=source_file)
+        _log_gate(result, attempt, g)
+        if not g.ok:
+            accumulated_feedback = g.feedback
+            if attempt > MAX_TOTAL_RETRIES:
+                result.final_gate = "drift"
+                result.last_gate_feedback = g.feedback
+                break
+            continue
+
+        # GATE 4 — run program.
+        g = gate_run(
+            output_root,
+            classes_out=classes_out,
+            vendor_dir=vendor_dir,
+            fixture_path=fixture_path,
+            slice_name=slice_name,
+        )
+        _log_gate(result, attempt, g)
+        if not g.ok:
+            accumulated_feedback = g.feedback
+            if attempt > MAX_TOTAL_RETRIES:
+                result.final_gate = "run"
+                result.last_gate_feedback = g.feedback
+                break
+            continue
+        captured_stdout = g.detail.get("stdout", "")
+
+        # GATE 5 — oracle diff.
+        g = gate_oracle_diff(captured_stdout, expected_path=expected_path, slice_name=slice_name)
+        _log_gate(result, attempt, g)
+        if not g.ok:
+            accumulated_feedback = g.feedback
+            if attempt > MAX_TOTAL_RETRIES:
+                result.final_gate = "oracle-diff"
+                result.last_gate_feedback = g.feedback
+                break
+            continue
+
+        # All five gates passed — ship it.
+        result.shipped = True
+        result.final_gate = "oracle-diff"  # last gate cleared
+        break
+
+    # Persist the conveyor log + last feedback.
+    (artifacts_root / "conveyor.json").write_text(json.dumps(result.to_dict(), indent=2))
+    if not result.shipped:
+        (artifacts_root / "gate_failure.json").write_text(json.dumps({
+            "run_id": run_id,
+            "blocked_at": result.final_gate,
+            "attempts": result.attempts,
+            "last_feedback": result.last_gate_feedback,
+        }, indent=2))
 
     return output_root
 
 
-# ---- per-persona orchestration ------------------------------------------------
+# ----------------------------------------------------------------------------
 
-def _run_persona(
-    coord: Coordinator,
-    persona: str,
-    context: str,
-    *,
-    k: int,
-    force: bool,
-) -> PersonaResult:
-    """Call `persona` K times in parallel; validate-and-retry each; K-vote contracts."""
-    prompt_path = PERSONA_PROMPT[persona]
-    base_prompt = prompt_path.read_text()
-
-    if k <= 1:
-        # Single call (still validates-and-retries up to MAX_VALIDATE_RETRIES).
-        contract, files, raw, valid = _single_persona_call(
-            coord, base_prompt, context, persona, force=force, kvote_idx=0, k_total=1,
-        )
-        return PersonaResult(
-            persona=persona, k=1,
-            contracts=[contract], files=[files], raw_responses=[raw],
-            majority_contract=contract,
-            field_agreement={}, divergent_fields=[],
-            contract_valid=[valid], chosen_files_index=0,
-        )
-
-    # K parallel calls. force=True so the cache key (identical across K) isn't
-    # short-circuited; we want K distinct Codex invocations.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=k) as pool:
-        futures = [
-            pool.submit(
-                _single_persona_call,
-                coord, base_prompt, context, persona,
-                force=True, kvote_idx=i, k_total=k,
-            )
-            for i in range(k)
-        ]
-        results = [f.result() for f in futures]
-
-    contracts = [r[0] for r in results]
-    files_list = [r[1] for r in results]
-    raws = [r[2] for r in results]
-    valids = [r[3] for r in results]
-
-    from harness.contract.kvote import kvote
-    kv = kvote(contracts)
-
-    # Pick the files-tree from the K-run whose contract most-closely matches
-    # the K-vote majority. Tie-break to index 0.
-    chosen_idx = _pick_majority_run(contracts, kv.majority)
-
-    return PersonaResult(
-        persona=persona, k=k,
-        contracts=contracts, files=files_list, raw_responses=raws,
-        majority_contract=kv.majority,
-        field_agreement=kv.field_agreement, divergent_fields=kv.divergent_fields,
-        contract_valid=valids, chosen_files_index=chosen_idx,
-    )
-
-
-def _single_persona_call(
-    coord: Coordinator,
-    base_prompt: str,
-    context: str,
-    persona: str,
-    *,
-    force: bool,
-    kvote_idx: int,
-    k_total: int,
-) -> tuple[dict[str, Any], dict[str, str], dict[str, Any], bool]:
-    """One Codex call. Returns (empty_contract, files_dict, raw_response, True).
-
-    v2 — personas no longer emit contracts; the harness extracts them from the
-    files post-hoc. Retry-on-no-files is a separate concern; the caller decides
-    whether 0 files means re-run.
-    """
-    current_prompt = base_prompt
-    if k_total > 1:
-        current_prompt = f"{base_prompt}\n\n<!-- k-vote run {kvote_idx + 1} of {k_total} -->\n"
-
-    raw_response = coord.call_codex(prompt=current_prompt, context=context, force=force)
-    final_message = str(raw_response.get("final_message") or raw_response.get("stdout") or "")
-    files = _parse_response(final_message)
-    # contract is empty here — extraction happens after disk write in run().
-    return {}, files, raw_response, True
+def _wipe_and_save_java(output_root: Path, files: dict[str, str]) -> None:
+    """Erase prior Java + write fresh emission. Forces clean retries."""
+    if output_root.exists():
+        for p in output_root.rglob("*.java"):
+            try:
+                p.unlink()
+            except OSError:
+                pass
+    for relpath, body in files.items():
+        target = output_root / relpath
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body)
 
 
 def _parse_response(text: str) -> dict[str, str]:
-    """Extract Java + xml + text blocks from one Codex response.
-
-    Returns files_dict mapping relpath -> body. v2: no contract parsing — the
-    persona prompts forbid contract emission and the harness AST-extracts.
-    """
     files: dict[str, str] = {}
     for m in JAVA_BLOCK.finditer(text):
-        files[m.group("path").strip()] = m.group("body")
-    for m in XML_BLOCK.finditer(text):
-        files[m.group("path").strip()] = m.group("body")
-    for m in TEXT_BLOCK.finditer(text):
         files[m.group("path").strip()] = m.group("body")
     return files
 
 
-def _pick_majority_run(contracts: list[dict[str, Any]], majority: dict[str, Any]) -> int:
-    """Pick the K-run whose contract best matches the majority.
-
-    Crude metric: count exact-key-value matches at top-level. Tie-break to 0.
-    """
-    if not contracts:
-        return 0
-    best_idx = 0
-    best_score = -1
-    for i, c in enumerate(contracts):
-        score = sum(1 for k, v in c.items() if k in majority and majority[k] == v)
-        if score > best_score:
-            best_score = score
-            best_idx = i
-    return best_idx
-
-
-# ---- artifact persistence ---------------------------------------------------
-
-def _save_persona(artifacts_root: Path, result: PersonaResult) -> None:
-    output_dir = artifacts_root / "output"
-    contracts_dir = artifacts_root / "contracts"
-    raw_dir = artifacts_root / "raw" / result.persona
-    contracts_dir.mkdir(parents=True, exist_ok=True)
-    raw_dir.mkdir(parents=True, exist_ok=True)
-
-    # Write the chosen K-run's files.
-    chosen_files = result.files[result.chosen_files_index] if result.files else {}
-    for relpath, body in chosen_files.items():
-        target = output_dir / relpath
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(body)
-
-    # v2: contracts are AST-extracted from emitted Java in run(), not from the
-    # persona output. Skip writing per-persona contracts here — the run()
-    # function writes the extracted versions after both personas land on disk.
-
-    # Per-K K-vote metadata (if K>1).
-    if result.k > 1:
-        kvote_path = contracts_dir / f"kvote-metadata.{result.persona}.json"
-        kvote_path.write_text(json.dumps({
-            "k": result.k,
-            "field_agreement": result.field_agreement,
-            "divergent_fields": result.divergent_fields,
-            "contract_valid_per_run": result.contract_valid,
-            "chosen_run_index": result.chosen_files_index,
-        }, indent=2))
-
-    # Raw responses per K (for forensics).
-    for i, raw in enumerate(result.raw_responses):
-        (raw_dir / f"response-{i}.json").write_text(
-            json.dumps(raw, indent=2, default=str)
-        )
+def _log_gate(result: ConveyorResult, attempt: int, gate: GateResult) -> None:
+    detail = ""
+    if gate.name == "code-arrived":
+        detail = f"{gate.detail.get('files_found', 0)} files"
+    elif gate.name == "compile":
+        if gate.ok:
+            detail = f"{gate.detail.get('class_files', 0)} class files"
+        else:
+            detail = "javac errors"
+    elif gate.name == "drift":
+        if gate.ok:
+            detail = "0 findings"
+        else:
+            detail = f"{gate.detail.get('fails', 0)} fails / {gate.detail.get('warns', 0)} warns"
+    elif gate.name == "run":
+        if gate.ok:
+            detail = f"rc=0, stdout {gate.detail.get('stdout_bytes', 0)}B"
+        else:
+            detail = f"rc={gate.detail.get('returncode', '?')}"
+    elif gate.name == "oracle-diff":
+        if gate.ok:
+            detail = "matches"
+        else:
+            detail = f"{gate.detail.get('diff_lines', 0)} diff lines"
+    result.log.append(GateLogEntry(
+        attempt=attempt, gate=gate.name, ok=gate.ok,
+        elapsed=gate.elapsed_seconds, detail_summary=detail,
+    ))
 
 
-def _save_backcompat_codex_response(artifacts_root: Path, code_result: PersonaResult) -> None:
-    """Keep `codex_response.json` at the run root for tools that still read wave-1/2's path."""
-    if not code_result.raw_responses:
-        return
-    raw = code_result.raw_responses[code_result.chosen_files_index]
-    (artifacts_root / "codex_response.json").write_text(
-        json.dumps(raw, indent=2, default=str)
-    )
+def _resolve_fixture(repo_root: Path, slice_name: str) -> Path:
+    """Find the canonical fixture for a slice. Defaults to CardDemo carddata.txt."""
+    # The iria contract names the ASCII path; for v1 we hard-code the known CardDemo location.
+    candidate = repo_root.parent / "CardDemo" / "app" / "data" / "ASCII" / "carddata.txt"
+    if candidate.exists():
+        return candidate
+    return repo_root / "corpus" / "carddata.txt"  # fallback; non-existent = harness setup error
