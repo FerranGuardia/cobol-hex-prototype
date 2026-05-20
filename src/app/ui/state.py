@@ -33,15 +33,19 @@ LIVE_WINDOW_SECONDS = 15 * 60  # a run is "in flight" only if mtime within this
 RUN_ID_RE = re.compile(r"^\d{8}-\d{6}-[0-9a-f]+$")
 SMOKE_PREFIX_RE = re.compile(r"^(smoke|f3-|.*-smoke$)")
 
-# Phase definitions. Order matters — earlier phases run first.
+# Phase definitions. Pre-conveyor phases stay file-based.
 PHASES = [
-    {"id": "F3", "label": "context pack",    "path": "context_pack.md",                                       "kind": "file"},
-    {"id": "F4", "label": "golden master",   "path": "golden_master.json",                                    "kind": "file"},
-    {"id": "F5a","label": "code-author",     "path": "raw/code-author/response-0.json",                       "kind": "file"},
-    {"id": "F5b","label": "test-author",     "path": "raw/test-author/response-0.json",                       "kind": "file"},
-    {"id": "F5d","label": "contract-diff",   "path": "contracts/diff.json",                                   "kind": "file"},
-    {"id": "F6", "label": "validate",        "path": "validation.json",                                       "kind": "file"},
-    {"id": "F6d","label": "drift-check",     "path": "drift.json",                                            "kind": "file"},
+    {"id": "F3", "label": "context pack",  "path": "context_pack.md",     "kind": "file"},
+    {"id": "F4", "label": "golden master", "path": "golden_master.json",  "kind": "file"},
+]
+
+# Conveyor-belt gates, surfaced from `conveyor.json`. Order matches pipeline/convert.py.
+CONVEYOR_GATES = [
+    ("code-arrived", "code arrived"),
+    ("compile",      "compile (javac)"),
+    ("drift",        "drift checks"),
+    ("run",          "run vs fixture"),
+    ("oracle-diff",  "stdout vs oracle"),
 ]
 
 
@@ -169,6 +173,23 @@ def _scan_run(run_dir: Path) -> Run | None:
                 mtime=None, size=None, relpath=p["path"],
             ))
 
+    # Conveyor-belt gates: derive from conveyor.json if present.
+    conveyor_path = run_dir / "conveyor.json"
+    if conveyor_path.exists():
+        try:
+            conveyor = json.loads(conveyor_path.read_text())
+            phases.extend(_conveyor_phases(conveyor, conveyor_path))
+        except Exception:
+            pass
+    else:
+        # No conveyor.json yet — show gate placeholders if a code-author response landed.
+        if (run_dir / "raw" / "code-author").exists():
+            for gate_id, label in CONVEYOR_GATES:
+                phases.append(Phase(
+                    id=f"G:{gate_id}", label=label,
+                    status="pending", mtime=None, size=None, relpath="conveyor.json",
+                ))
+
     # Compute run-level mtime + start.
     mtimes = [ph.mtime for ph in phases if ph.mtime is not None]
     last_mtime = max(mtimes) if mtimes else run_dir.stat().st_mtime
@@ -201,6 +222,59 @@ def _scan_run(run_dir: Path) -> Run | None:
         is_live=is_live, overall_status=overall,
         phases=phases, issues=issues, summary_line=summary,
     )
+
+
+def _conveyor_phases(conveyor: dict, source_path: Path) -> list[Phase]:
+    """Turn a conveyor.json into a list of phases (one per gate, plus an attempt counter).
+
+    For each canonical gate, walk the log and take the most recent entry for that gate.
+    `ok=True` → done; `ok=False` → blocked/running depending on whether shipped.
+    """
+    log = conveyor.get("log", [])
+    shipped = conveyor.get("shipped", False)
+    final_gate = conveyor.get("final_gate")
+    attempts = conveyor.get("attempts", 0)
+    mtime = source_path.stat().st_mtime if source_path.exists() else None
+
+    # Map gate -> most recent log entry (later attempts override earlier).
+    latest: dict[str, dict] = {}
+    for entry in log:
+        latest[entry.get("gate", "?")] = entry
+
+    out: list[Phase] = []
+    if attempts:
+        out.append(Phase(
+            id="G:attempts", label="conveyor attempts",
+            status="done", mtime=mtime, size=None, relpath="conveyor.json",
+            detail=f"{attempts} attempt(s) · {'shipped' if shipped else 'blocked at ' + (final_gate or '?')}",
+        ))
+
+    for gate_id, label in CONVEYOR_GATES:
+        entry = latest.get(gate_id)
+        if entry is None:
+            status = "pending"
+            detail = ""
+        elif entry.get("ok"):
+            status = "done"
+            detail = entry.get("detail") or ""
+        else:
+            # Failed entry — if pipeline shipped, this gate was eventually passed (skip the
+            # historical fail); if not shipped and this is the final gate, mark blocked.
+            if shipped:
+                status = "done"
+                detail = entry.get("detail") or ""
+            elif final_gate == gate_id:
+                status = "fail"
+                detail = entry.get("detail") or ""
+            else:
+                status = "done"  # passed eventually since we moved past it
+                detail = entry.get("detail") or ""
+        out.append(Phase(
+            id=f"G:{gate_id}", label=label,
+            status=status, mtime=mtime, size=None, relpath="conveyor.json",
+            detail=detail,
+        ))
+    return out
 
 
 def _detect_slice(run_dir: Path) -> str | None:

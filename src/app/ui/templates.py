@@ -162,6 +162,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .ph-mark.done    { color: var(--ok); }
   .ph-mark.running { color: var(--accent); font-weight: bold; }
   .ph-mark.pending { color: var(--text-faint); }
+  .ph-mark.fail    { color: var(--error); font-weight: bold; }
+  .phases li.fail  { color: var(--error); }
   .ph-label  { color: inherit; }
   .ph-detail { color: var(--text-soft); }
   .ph-time   { color: var(--text-soft); text-align: right; }
@@ -273,7 +275,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 </div>
 
 <script>
-const STATUS_GLYPH = { done: '✓', running: '◐', pending: '·' };
+const STATUS_GLYPH = { done: '✓', running: '◐', pending: '·', fail: '✗' };
 const STATUS_LABEL = { ok: 'all pass', running: 'running', issues: 'issues', blocked: 'blocked' };
 
 function fmtDuration(seconds) {
