@@ -49,9 +49,11 @@ class Coordinator:
 
     def call_codex(self, *, prompt: str, context: str, force: bool = False) -> dict:
         """Cache-aware Codex call. Returns the cached result if available."""
+        # Fold reasoning_effort into the model component so different effort = different cache.
+        model_id = f"{self.cfg.model or 'default'}|effort={self.cfg.reasoning_effort}"
         key = cache_key(
             prompt=prompt, context=context,
-            model=self.cfg.model, seed=self.cfg.seed,
+            model=model_id, seed=self.cfg.seed,
         )
         full_prompt = f"{prompt}\n\n---CONTEXT---\n{context}"
 
@@ -61,6 +63,7 @@ class Coordinator:
                 model=self.cfg.model,
                 seed=self.cfg.seed,
                 temperature=self.cfg.temperature,
+                reasoning_effort=self.cfg.reasoning_effort,
                 timeout_seconds=self.cfg.timeout_seconds,
                 codex_bin=self.cfg.codex_bin,
             ).run() | {"cache_key": key}

@@ -27,7 +27,8 @@ def _config_from_env() -> RunConfig:
     return RunConfig(
         corpus_root=Path(corpus).resolve(),
         codex_bin=os.environ.get("CODEX_BIN", "codex"),
-        model=os.environ.get("LLM_MODEL", "gpt-5-codex"),
+        model=os.environ.get("LLM_MODEL", ""),  # blank = let Codex pick default
+        reasoning_effort=os.environ.get("LLM_REASONING_EFFORT", "high"),
         temperature=float(os.environ.get("LLM_TEMPERATURE", "0")),
         seed=int(os.environ.get("LLM_SEED", "42")),
         cache_dir=Path(os.environ.get("CACHE_DIR", ".cache")).resolve(),

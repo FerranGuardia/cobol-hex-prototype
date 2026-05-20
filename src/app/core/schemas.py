@@ -14,6 +14,7 @@ class RunConfig(BaseModel):
     corpus_root: Path
     codex_bin: str
     model: str
+    reasoning_effort: str = "high"  # none|low|medium|high|xhigh
     temperature: float = 0.0
     seed: int = 42
     cache_dir: Path

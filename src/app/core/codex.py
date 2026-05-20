@@ -30,6 +30,7 @@ class CodexCall:
     model: str
     seed: int
     temperature: float
+    reasoning_effort: str = "high"  # none|low|medium|high|xhigh
     timeout_seconds: int = 600
     workdir: Path | None = None
     codex_bin: str = "codex"
@@ -52,6 +53,7 @@ class CodexCall:
             "exec",
             "-s", "read-only",
             "-c", f"temperature={self.temperature}",
+            "-c", f'model_reasoning_effort="{self.reasoning_effort}"',
             "--ephemeral",
             "--ignore-user-config",
             "--ignore-rules",
