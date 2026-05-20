@@ -27,11 +27,12 @@ Empty. No real runs have been executed yet. Tags below are the *scaffold* — mo
 | `T3-RUN-DRIFT-SEMANTIC` | T3 | 3 runs produce semantically different code (failing AST equivalence) | Tighten persona; investigate non-determinism source | Not yet |
 | `T4-COST-OVERRUN` | T4 | Token cost exceeds per-file budget | Re-chunk; if persists → human review | Not yet |
 | `T4-TIMEOUT` | T4 | Wall-clock exceeds per-file budget | Re-chunk; if persists → escalate | Not yet |
-| `UNCONVERTIBLE-ALTER` | T1 | Source uses COBOL `ALTER` statement (dynamic GO TO target rebinding) | Out of scope; log; skip file | Not yet |
-| `UNCONVERTIBLE-DYNAMIC-GOTO` | T1 | Source uses computed/dynamic GO TO | Out of scope; log; skip file | Not yet |
-| `UNCONVERTIBLE-EXEC-CICS` | T1 | Source uses EXEC CICS (out of step-1 scope) | Out of scope; log; skip file | Not yet |
-| `UNCONVERTIBLE-EXEC-DLI` | T1 | Source uses EXEC DLI / IMS (out of step-1 scope) | Out of scope; log; skip file | Not yet |
-| `UNCONVERTIBLE-EXEC-MQ` | T1 | Source uses EXEC MQ (out of step-1 scope) | Out of scope; log; skip file | Not yet |
+| `INVESTIGATE-ALTER` | T1 | Source uses COBOL `ALTER` statement (dynamic GO TO target rebinding) | Investigator agent proposes alternate angles; log each wave | Not yet |
+| `INVESTIGATE-DYNAMIC-GOTO` | T1 | Source uses computed/dynamic GO TO | Investigator agent proposes alternate angles; log each wave | Not yet |
+| `INVESTIGATE-EXEC-CICS` | T1 | Source uses EXEC CICS (not in step-1 scope yet — but still investigated, not stickered) | Investigator proposes angles; if blocked, log evidence | Not yet |
+| `INVESTIGATE-EXEC-DLI` | T1 | Source uses EXEC DLI / IMS | Investigator proposes angles; if blocked, log evidence | Not yet |
+| `INVESTIGATE-EXEC-MQ` | T1 | Source uses EXEC MQ | Investigator proposes angles; if blocked, log evidence | Not yet |
+| `BLOCKED-<concept>-AFTER-<N>-WAVES` | T1 | Investigator exhausted creative angles. Terminal state. | None — written to investigation log; file deferred to a future wave with explicit rationale | Not yet |
 
 ## Convergence criteria for industrialization
 
@@ -40,9 +41,56 @@ The catalog is considered *stable* when:
 1. ≥10 distinct slices have been converted with `acceptance/matrix.json` entries.
 2. No new tag has been added in the last 3 slices.
 3. Tag distribution across the last 3 slices is statistically similar (no surprise mode appears).
-4. ≤10% of files fall into `UNCONVERTIBLE-*` for the in-scope sub-corpus.
+4. ≤10% of files fall into `BLOCKED-*` for the in-scope sub-corpus.
+5. Every `BLOCKED-*` entry has a populated `investigation` log with ≥3 distinct wave attempts (see "BLOCKED is earned" below).
 
 Until then, this is a moving target. That is expected and desirable during research.
+
+## BLOCKED is earned, not declared
+
+There is NO `OUT-OF-SCOPE` classification on this project. See [`docs/HARNESS-DESIGN.md`](docs/HARNESS-DESIGN.md) and the project memory `feedback-creative-exhaustion` for the principle.
+
+Lifecycle of a failure mode:
+
+```
+INVESTIGATE-<concept>     ← active; the Investigator agent is proposing new angles each wave
+        │
+        ▼ (after N waves with distinct approaches and exhausted creative attempts)
+BLOCKED-<concept>-AFTER-<N>-WAVES
+```
+
+A `BLOCKED-*` entry without a populated `investigation` log of ≥3 distinct attempts is itself a gate failure. The harness will refuse to write that tag.
+
+The investigation log lives at `acceptance/investigations/<concept>.json`:
+
+```json
+{
+  "concept": "ALTER",
+  "first_observed": "2026-MM-DD",
+  "investigation": [
+    {
+      "wave": 1,
+      "approach": "Re-read source; check if ALTER targets are statically determinable via dataflow",
+      "result": "All 3 ALTER statements have exactly 2 possible runtime targets; LLM proposed a switch with the target as the discriminant",
+      "verdict": "candidate — try implementing"
+    },
+    {
+      "wave": 2,
+      "approach": "Implement switch-discriminant approach; run against sample data",
+      "result": "Output passes T1 but T2 differs by 1 record — discriminant tracking lost one case",
+      "verdict": "partial — needs reachability proof"
+    },
+    {
+      "wave": 3,
+      "approach": "Add Investigator-proposed flag-tracking pre-pass to enumerate reachable ALTER targets",
+      "result": "T2 now passes; T3 drift remains; investigate cache invalidation",
+      "verdict": "candidate — iterate"
+    }
+  ],
+  "status": "blocked" | "resolved" | "investigating",
+  "blocked_target_wave": "wave-4 SQL introduction; revisit"
+}
+```
 
 ## Process
 

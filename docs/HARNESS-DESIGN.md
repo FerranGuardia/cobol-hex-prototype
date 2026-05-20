@@ -50,10 +50,21 @@ class CheckResult:
 ```
 AGENTS.md                # operating doctrine: surgical commits, no stubs, deferred bugs, source-of-truth hierarchy
 acceptance/
-└── matrix.json          # the only state board; entries follow the 7-item rule from vb6 §1.3
+├── matrix.json          # the only state board; entries follow the 7-item rule from vb6 §1.3
+└── investigations/      # per-concept investigation logs (see "BLOCKED is earned")
 corpus/
-└── classification.json  # per-program: VALID | NEGATIVE | OUT-OF-SCOPE | DEFERRED-wave-N
+└── classification.json  # per-program: VALID | NEGATIVE | INVESTIGATING | BLOCKED
+                         # NOTE: no OUT-OF-SCOPE. See feedback-creative-exhaustion memory.
 ```
+
+**Critical divergence from vb6 / vfp9:** we do NOT use `OUT-OF-SCOPE` as a corpus classification. The user's hard rule (`feedback-creative-exhaustion`):
+> A tool that puts an OUT-OF-SCOPE sticker on day 1 is a tool that makes excuses. BLOCKED is a terminal state earned through ≥3 wave-distinct investigation attempts.
+
+So our classification states are:
+- **VALID** — the pipeline converts it successfully.
+- **NEGATIVE** — deliberately invalid input the pipeline MUST reject with a diagnostic.
+- **INVESTIGATING** — actively being worked on; the Investigator agent (increment 5) is proposing new angles each wave.
+- **BLOCKED** — terminal, but only after `acceptance/investigations/<concept>.json` has ≥3 distinct approach entries demonstrating creative exhaustion. The harness gates this — a `BLOCKED` entry without an evidence log is itself a gate failure.
 
 `AGENTS.md` ports the hard rules verbatim from newABINA's CLAUDE.md + vfp9's bugfix-w1/AGENT.md, COBOL-adapted:
 
@@ -129,33 +140,63 @@ The COBOL → Java mapping is *recoverable* because we have provenance comments.
 
 **Acceptance:** the auditor runs on wave-1 output and produces a coverage report showing >95% of CBACT02C lines have a provenance reference.
 
-## Increment 5 — Convergence loop + git hook + classification gate
+## Increment 5 — Convergence loop + Investigator agent + git hook + classification gate
 
-**Goal:** when the harness fails, the converter is re-invoked with the violations as input. Bounded retries. The git hook prevents committing while red.
+**Goal:** when the harness fails, the converter is re-invoked with the violations as input. Bounded retries. **Crucially:** before a slice gets marked `BLOCKED`, an Investigator agent proposes a NEW creative angle. The git hook prevents committing while red.
 
 ```
 harness/
-├── loop.py              # if gate fails AND retries < 3, re-prompt converter with violations
-└── classification.py    # gate enforces: every file in classification.json maps to expected status
+├── loop.py              # the convergence orchestrator (see lifecycle below)
+├── investigator.py      # the Investigator agent — proposes alternate angles when retries plateau
+├── classification.py    # gate enforces: every file in classification.json has its expected status
+└── investigations/      # per-concept investigation logs (acceptance/investigations/<concept>.json)
 
 .git/hooks/
 └── pre-commit           # runs `harness.gate.run()` on currently-generated artifacts; blocks if red
 ```
 
-This is where "harness as bouncer" becomes operational. Codex produces output → gate runs → if red, gate writes the violations into the next prompt, re-invokes Codex → up to 3 retries → if still red, log to FAILURES.md and skip the file.
+### Convergence loop lifecycle (per slice)
 
-Convergence rules from research:
-- max 3 LLM retries per file (vfp9 surgical fix discipline)
-- max 5 methodology iterations per slice (anti-infinite-loop)
-- ≤10% human-fix rate before we call the methodology stable
+```
+attempt 1: converter naive
+          ↓ T1 red?
+attempt 2: converter + violations from attempt 1 in prompt (vfp9 pattern)
+          ↓ T1 still red?
+attempt 3: converter + accumulated violations
+          ↓ T1 STILL red?
+─────────── plateau detected ────────────
+Investigator agent runs:
+  - reads source from a *different* angle (e.g., focus on data flow not control flow)
+  - consults a *different* reference (e.g., NIST CCVS for similar idiom; abhi-ksh/aws-carddemo-modernized for a comparable case)
+  - proposes a *new technique* not yet tried (e.g., "treat this paragraph as a state machine, not procedural")
+  - emits an `investigation_entry` for acceptance/investigations/<concept>.json
+attempt 4: converter + Investigator's new angle
+          ↓ T1 still red?
+Investigator runs again with the new constraint of "do not propose anything already in the log"
+attempt 5: converter + second new angle
+          ↓
+... continues until investigation log has ≥3 distinct attempts AND last 2 are exhausted
+final state: BLOCKED-<concept>-AFTER-N-WAVES, with full investigation log
+```
 
-**Recycle from research:**
+**No file gets `BLOCKED` without ≥3 wave-distinct investigation entries.** The gate enforces this; emitting `BLOCKED` with an empty or short investigation log fails the gate itself.
+
+### Convergence rules
+
+- max 3 plain-LLM retries per file (vfp9 surgical fix discipline)
+- max 3 Investigator-driven retries (each must propose a new angle)
+- max 5 methodology iterations per slice across all of the above (anti-infinite-loop ceiling)
+- ≤10% BLOCKED rate before we call the methodology stable
+- **Every BLOCKED has investigation evidence** — see `feedback-creative-exhaustion` memory + `FAILURES.md` "BLOCKED is earned" section
+
+### Recycle from research:
 - vfp9 PROHIBIDO git commit (§1.8)
 - vb6 supply-chain hygiene equivalents (§1.9) — adapt to Python `pip install --require-hashes`
+- **Divergence from vb6/vfp9:** they treat unsupported features as OUT-OF-SCOPE on day 1. We don't. Every BLOCKED is earned (see `feedback-creative-exhaustion`).
 
 **Won't ship:** automated escalation to a wave-2 issue tracker (that's a wave-3 concern).
 
-**Acceptance:** running the convergence loop on a *deliberately corrupted* wave-1 output (we'll inject a hex-violation manually) detects, re-prompts, and either fixes or escalates correctly.
+**Acceptance:** running the convergence loop on a *deliberately broken* wave-1 output (we inject a hex-violation manually) — detects, re-prompts, eventually fixes OR produces a populated investigation log + BLOCKED tag. The gate refuses to accept BLOCKED tags lacking the log.
 
 ---
 

@@ -77,6 +77,21 @@ These are *retrospective findings* from each project — things they tried and w
 | No-stubs hard rule | ★★★★★ | **Build now** | Gate step that lexically rejects `UnsupportedOperationException`, `// TODO`, `() => {}`, empty methods |
 | Fixed environment contracts | ★★★☆☆ | Build wave-2 | Replace `process.cwd()` with config-driven paths |
 
+## 3.5. Deliberate divergence from the research: NO `OUT-OF-SCOPE` classification
+
+The research showed all three reference projects use `OUT-OF-SCOPE` as a day-1 corpus classification (vb6 uses it for `.frm` designer files; vfp9 uses it for features the runtime doesn't execute). **We do not copy this pattern.** Per user direction (saved as `feedback-creative-exhaustion` memory):
+
+> "I don't like OUT-OF-SCOPE in a tool like that... needs an input and an output and maybe communicate what it can't but if it can't needs to be justified by at least a wave of research and 3 iterations creatively."
+
+A tool whose stated purpose is to do COBOL→Java conversion does not get to label inputs OUT-OF-SCOPE before attempting them. Instead we use:
+
+- **VALID** — converts successfully
+- **NEGATIVE** — deliberately invalid input, MUST be rejected with diagnostic
+- **INVESTIGATING** — actively being worked on by the convergence loop + Investigator agent
+- **BLOCKED** — terminal state, requires ≥3 wave-distinct entries in `acceptance/investigations/<concept>.json` proving creative exhaustion. The harness gates this — a BLOCKED tag without an evidence log fails the gate.
+
+This is the project's first explicit divergence from the recycled patterns. See `HARNESS-DESIGN.md` increment 2 + 5 for how it manifests.
+
 ## 4. Things we deliberately won't copy
 
 - **Frida hooks / runtime capture.** We don't run COBOL; legacy runtime is out of scope (see `project-scope-clarification` memory).
